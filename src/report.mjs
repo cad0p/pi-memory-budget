@@ -98,9 +98,9 @@ export function renderMarkdown(input) {
             : "never"
           : `${a.settleT.toFixed(0)} s`;
       const spread =
-        a.steadyMinMb === null || a.steadyMaxMb === null
+        a.steadySpreadMb === null
           ? "n/a"
-          : a.steadyMinMb === a.steadyMaxMb
+          : a.steadySpreadMb === 0
             ? "0.0"
             : `${fmt(a.steadySpreadMb)} (${fmt(a.steadyMinMb)}-${fmt(a.steadyMaxMb)})`;
       out.push(
