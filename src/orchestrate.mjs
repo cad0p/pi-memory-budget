@@ -108,10 +108,12 @@ export async function runBudget(o, hooks = {}) {
             env,
             windowSec: o.window,
             steadySec: Math.min(o.steadySeconds, o.window),
+            settleMaxSec: o.settleMax,
+            releaseSec: o.budgets.spikeReleaseSeconds,
             extraArgs: o.piArgs,
           });
           log(
-            `  steady ${r.steadyMb.toFixed(1)} MB, spike ${r.spikeMb.toFixed(1)} MB, children ${r.childrenSteadyMb.toFixed(1)} MB, max ping gap ${r.maxGapMs.toFixed(0)} ms`,
+            `  ${r.settled ? `steady ${/** @type {number} */ (r.steadyMb).toFixed(1)} MB (settled at ${/** @type {number} */ (r.settleT).toFixed(0)}s, main ${/** @type {number} */ (r.mainSteadyMb).toFixed(1)} + children ${/** @type {number} */ (r.childrenSteadyMb).toFixed(1)}` : "never settled"}, spike ${r.spikeMb.toFixed(1)} MB, max ping gap ${r.maxGapMs.toFixed(0)} ms`,
           );
           measurements[c][name].push(r);
           if (sessionFile) fs.rmSync(sessionFile, { force: true });
@@ -135,6 +137,7 @@ export async function runBudget(o, hooks = {}) {
     windowSec: o.window,
     steadySec: Math.min(o.steadySeconds, o.window),
     sessionMb: o.sessionMb,
+    settleMaxSec: o.settleMax,
     seed: o.seed,
     cases: o.cases,
     extensions: o.extensions,

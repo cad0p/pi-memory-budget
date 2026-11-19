@@ -17,6 +17,7 @@ import { resolveBudgets } from "./budget.mjs";
  * @property {number} [runs]
  * @property {number} [window]
  * @property {number} [steadySeconds]
+ * @property {number} [settleMax]
  * @property {number} [sessionMb]
  * @property {string[]} [cases]
  * @property {number} [seed]
@@ -34,6 +35,7 @@ const KNOWN = new Set([
   "runs",
   "window",
   "steadySeconds",
+  "settleMax",
   "sessionMb",
   "cases",
   "seed",
@@ -75,6 +77,7 @@ export function loadConfigFile(file) {
  * @property {number} runs
  * @property {number} window
  * @property {number} steadySeconds
+ * @property {number} settleMax
  * @property {number} sessionMb
  * @property {string[]} cases
  * @property {number} seed
@@ -152,6 +155,7 @@ export function resolveOptions(cli, tmpdir) {
     runs: cli.runs ?? cfg.runs ?? 3,
     window: cli.window ?? cfg.window ?? 30,
     steadySeconds: cli.steadySeconds ?? cfg.steadySeconds ?? 10,
+    settleMax: cli.settleMax ?? cfg.settleMax ?? 120,
     sessionMb: cli.sessionMb ?? cfg.sessionMb ?? 200,
     cases,
     seed: cli.seed ?? cfg.seed ?? 1,

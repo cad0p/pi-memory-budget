@@ -66,7 +66,11 @@ export function buildPiArgs(spec) {
   const args = ["--mode", "rpc"];
   if (spec.sessionFile) args.push("--session", spec.sessionFile);
   else args.push("--no-session");
-  args.push("-ne");
+  // Isolation: the only difference between vanilla and candidate is the
+  // extension under test. -ne explicit-only extensions, -ns skills, -np prompt
+  // templates, --no-themes, --no-mcp (MCP servers would also show up as child
+  // processes), -nc AGENTS.md/CLAUDE.md discovery.
+  args.push("-ne", "-ns", "-np", "--no-themes", "--no-mcp", "-nc");
   for (const e of spec.extensions) args.push("-e", e);
   args.push(...(spec.extraArgs ?? []));
   return args;

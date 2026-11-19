@@ -21,6 +21,8 @@ function statusCell(c) {
   if (c.status === "WAIVED")
     return `WAIVED (${(c.note ?? "").replace(/^.*would /, "would ")}): ${c.reason}`;
   if (c.status === "SKIP") return `SKIP: ${c.note ?? "not applicable"}`;
+  if (c.status === "INCONCLUSIVE")
+    return `INCONCLUSIVE: ${c.note ?? "could not be measured"}`;
   return c.status === "FAIL" && c.note ? `FAIL: ${c.note}` : c.status;
 }
 
@@ -39,10 +41,14 @@ function statusCell(c) {
 export function renderMarkdown(input) {
   const { result, meta } = input;
   const out = [];
-  const verdict = result.ok ? "PASS" : "FAIL";
+  const verdict = result.checks.some((x) => x.status === "FAIL")
+    ? "FAIL"
+    : result.ok
+      ? "PASS"
+      : "INCONCLUSIVE";
   out.push(`## Memory budget: ${verdict}`, "");
   out.push(
-    `pi ${meta.piVersion}, ${meta.platform}, ${meta.runs} run(s) per configuration (median), ${meta.windowSec}s window, steady = median of the last ${meta.steadySec}s. Deltas are candidate minus vanilla pi in the same job. Values in MB.`,
+    `pi ${meta.piVersion}, ${meta.platform}, ${meta.runs} run(s) per configuration (median), ${meta.windowSec}s minimum window, steady = median of the settled ${meta.steadySec}s (total-RSS range < 5 MB, settle capped at ${meta.settleMaxSec}s). Deltas are candidate minus vanilla pi in the same job on TOTAL RSS: the pi pid plus every descendant. Values in MB.`,
     "",
   );
   for (const c of CASE_ORDER) {
@@ -75,12 +81,18 @@ export function renderMarkdown(input) {
     }
     out.push("");
     out.push(
-      "| Configuration | steady | spike | released | children steady | max ping gap |",
-      "|---|---:|---:|---:|---:|---:|",
+      "| Configuration | settle at | steady | spike | released | main steady | children steady | max ping gap |",
+      "|---|---:|---:|---:|---:|---:|---:|---:|",
     );
     for (const [name, a] of Object.entries(agg)) {
+      const settle =
+        a.settleT === null
+          ? a.settled
+            ? "n/a"
+            : "never"
+          : `${a.settleT.toFixed(0)} s`;
       out.push(
-        `| ${name} | ${fmt(a.steadyMb)} | ${fmt(a.spikeMb)} | ${fmt(a.releasedMb)} | ${fmt(a.childrenSteadyMb)} | ${fmt(a.maxGapMs, 0)} ms |`,
+        `| ${name} | ${settle} | ${a.steadyMb === null ? "not settled" : fmt(a.steadyMb)} | ${fmt(a.spikeMb)} | ${fmt(a.releasedMb)} | ${fmt(a.mainSteadyMb)} | ${fmt(a.childrenSteadyMb)} | ${fmt(a.maxGapMs, 0)} ms |`,
       );
     }
     out.push("");
@@ -96,6 +108,12 @@ export function renderMarkdown(input) {
       `| ${growth.label} | ${signed(growth.detail.deltaLong)} | ${signed(growth.detail.deltaLong2x)} | ${signed(growth.value)} | <= +${growth.limit} MB | ${statusCell(growth)} |`,
     );
     out.push("");
+  }
+  if (Number(meta.runs) < 3) {
+    out.push(
+      "Note: fewer than 3 runs per configuration — the median cannot absorb noise; RSS varies by tens of MB on big sessions.",
+      "",
+    );
   }
   const waived = result.checks.filter((x) => x.status === "WAIVED");
   if (waived.length) {
@@ -116,7 +134,10 @@ export function renderJson(input) {
     raw[c] = {};
     for (const [name, runs] of Object.entries(configs)) {
       raw[c][name] = runs.map((r) => ({
+        settleT: r.settleT,
+        settled: r.settled,
         steadyMb: r.steadyMb,
+        mainSteadyMb: r.mainSteadyMb,
         spikeMb: r.spikeMb,
         releasedMb: r.releasedMb,
         peakT: r.peakT,

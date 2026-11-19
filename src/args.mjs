@@ -16,7 +16,8 @@ run options:
   --env K=V                    extra environment variable for every pi process (repeatable)
   --runs <n>                   runs per configuration and case, median is used (default 3)
   --window <s>                 measurement window per run in seconds (default 30)
-  --steady-seconds <s>         steady = median RSS over the last s seconds (default 10)
+  --steady-seconds <s>         settled-window length for steady RSS (default 10)
+  --settle-max <s>             cap on the quiescence wait; "not settled" past it (default 120)
   --session-mb <n>             size of the long session fixture in MiB (default 200)
   --cases <list>               comma-separated: fresh,long,long2x (default all)
   --seed <n>                   fixture seed (default 1)
@@ -40,6 +41,7 @@ Exit code: 0 all budgets pass or are waived, 1 a budget FAILs, 2 usage or runtim
  * @property {number | undefined} runs
  * @property {number | undefined} window
  * @property {number | undefined} steadySeconds
+ * @property {number | undefined} settleMax
  * @property {number | undefined} sessionMb
  * @property {string[] | undefined} cases
  * @property {number | undefined} seed
@@ -94,6 +96,7 @@ export function parseRunArgs(argv) {
         runs: { type: "string" },
         window: { type: "string" },
         "steady-seconds": { type: "string" },
+        "settle-max": { type: "string" },
         "session-mb": { type: "string" },
         cases: { type: "string" },
         seed: { type: "string" },
@@ -136,6 +139,7 @@ export function parseRunArgs(argv) {
     runs: num(v.runs, "runs", { min: 1, integer: true }),
     window: num(v.window, "window", { min: 1 }),
     steadySeconds: num(v["steady-seconds"], "steady-seconds", { min: 1 }),
+    settleMax: num(v["settle-max"], "settle-max", { min: 1 }),
     sessionMb: num(v["session-mb"], "session-mb", { min: 1 }),
     cases,
     seed: num(v.seed, "seed", { integer: true }),

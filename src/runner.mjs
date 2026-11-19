@@ -44,6 +44,12 @@ export function installCleanupHooks() {
 /** @param {number} ms */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** Cap on how far past --window a run extends to make a pending release observable. */
+export const RELEASE_EXTEND_CAP_SEC = 60;
+
+/** Total-RSS range (MB) under which a steady window counts as quiet. */
+const SETTLE_RANGE_MB = 5;
+
 /**
  * @typedef {object} MeasureSpec
  * @property {{ command: string, args: string[] }} pi
@@ -51,8 +57,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * @property {string | null} sessionFile
  * @property {string} cwd
  * @property {NodeJS.ProcessEnv} env
- * @property {number} windowSec
- * @property {number} steadySec
+ * @property {number} windowSec minimum sampling window
+ * @property {number} steadySec settled-window length for steady RSS
+ * @property {number} [settleMaxSec] cap on the quiescence wait (default 120)
+ * @property {number} [releaseSec] keep sampling until peak + this (bounded) so a release is observable
  * @property {string[]} [extraArgs]
  * @property {number} [sampleMs]
  * @property {number} [pingMs]
@@ -65,6 +73,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  *   readyMs: number | null,
  *   pings: number,
  *   stderrTail: string,
+ *   exitT: number | null,
+ *   windowEndSec: number,
  * }} RunResult
  */
 
@@ -77,6 +87,8 @@ export async function measureRun(spec) {
   installCleanupHooks();
   const sampleMs = spec.sampleMs ?? 200;
   const pingMs = spec.pingMs ?? 100;
+  const settleMaxSec = spec.settleMaxSec ?? 120;
+  const releaseSec = spec.releaseSec ?? 0;
   const args = [
     ...spec.pi.args,
     ...buildPiArgs({
@@ -94,16 +106,21 @@ export async function measureRun(spec) {
   live.add(child);
   const t0 = performance.now();
   let exited = false;
+  /** @type {number | null} */
+  let exitT = null;
   /** @type {{ code: number | null, signal: string | null } | null} */
   let exitInfo = null;
   child.on("exit", (code, signal) => {
     exited = true;
+    exitT = (performance.now() - t0) / 1000;
     exitInfo = { code, signal };
   });
+  /** @type {Error | null} */
   let spawnError = null;
   child.on("error", (e) => {
     spawnError = e;
     exited = true;
+    exitT = (performance.now() - t0) / 1000;
   });
   child.stdin?.on("error", () => {});
   let stderrTail = "";
@@ -153,43 +170,87 @@ export async function measureRun(spec) {
   /** @type {import("./stats.mjs").Sample[]} */
   const samples = [];
   try {
-    const end = t0 + spec.windowSec * 1000;
-    let tick = 0;
+    // The loop extends past windowSec when needed: until the peak's release is
+    // observable (peak + releaseSec), capped.
     while (true) {
       const now = performance.now();
       if (spawnError) throw spawnError;
+      if (exited && samples.length === 0) break;
       if (exited) {
-        throw new Error(
-          `pi exited after ${((now - t0) / 1000).toFixed(1)}s, before the ${spec.windowSec}s window ended ${JSON.stringify(exitInfo)}\n${stderrTail}`,
-        );
+        // Died before the steady window is covered: hard error. During the
+        // release-observation extension: measurement cut short, exitT < end.
+        if ((now - t0) / 1000 < spec.windowSec) {
+          throw new Error(
+            `pi exited after ${(exitT ?? 0).toFixed(1)}s, before the ${spec.windowSec}s window ended ${JSON.stringify(exitInfo)}\n${stderrTail}`,
+          );
+        }
+        break;
       }
-      // children are scanned every 5th sample (process-table scans cost more)
-      const r = await readRss(/** @type {number} */ (child.pid), {
-        withChildren: tick % 5 === 0,
-      });
-      const prevKids = samples.length ? samples[samples.length - 1].kids : 0;
+      const r = await readRss(/** @type {number} */ (child.pid));
       if (r.rssMb !== null) {
         samples.push({
           t: (performance.now() - t0) / 1000,
           rss: r.rssMb,
-          kids: tick % 5 === 0 ? r.kidsMb : prevKids,
+          main: r.mainMb ?? 0,
+          kids: r.kidsMb,
         });
       }
-      tick++;
-      if (performance.now() >= end) break;
+      const lastT = (performance.now() - t0) / 1000;
+      if (lastT < spec.windowSec) {
+        await sleep(Math.max(0, sampleMs - (performance.now() - now)));
+        continue;
+      }
+      // Past the minimum window: two reasons to keep sampling.
+      // (a) Quiescence: the process has not been quiet for a full steady
+      // window yet (and the run must not stop right before it would settle).
+      let quiet = samples.length > 0;
+      if (quiet) {
+        const last = samples[samples.length - 1];
+        if (last.t < spec.steadySec) quiet = false;
+        else {
+          let lo = Number.POSITIVE_INFINITY;
+          let hi = Number.NEGATIVE_INFINITY;
+          for (let k = samples.length - 1; k >= 0; k--) {
+            const s = samples[k];
+            if (last.t - s.t > spec.steadySec) break;
+            if (s.rss < lo) lo = s.rss;
+            if (s.rss > hi) hi = s.rss;
+          }
+          quiet = hi - lo < SETTLE_RANGE_MB;
+        }
+      }
+      const waitForSettle = !quiet && lastT < settleMaxSec;
+      // (b) Release not yet observable AND RSS still at the peak: keep sampling
+      // so the check never has to fail on an unobserved release.
+      let waitForRelease = false;
+      if (releaseSec > 0 && samples.length) {
+        const peak = samples.reduce((a, b) => (b.rss > a.rss ? b : a));
+        waitForRelease =
+          samples[samples.length - 1].rss >= peak.rss - 0.5 &&
+          lastT < peak.t + releaseSec &&
+          lastT < spec.windowSec + RELEASE_EXTEND_CAP_SEC;
+      }
+      if (!waitForSettle && !waitForRelease) break;
       await sleep(Math.max(0, sampleMs - (performance.now() - now)));
     }
-    if (samples.length === 0)
+    if (spawnError) throw spawnError;
+    if (samples.length === 0) {
       throw new Error(`pi produced no RSS samples: ${stderrTail}`);
+    }
     for (const sent of pending.values())
       maxGap = Math.max(maxGap, performance.now() - sent);
     return {
-      ...summarize(samples, spec.steadySec),
+      ...summarize(samples, {
+        settleMax: settleMaxSec,
+        quietSec: spec.steadySec,
+      }),
       samples,
       maxGapMs: maxGap,
       readyMs,
       pings,
       stderrTail,
+      exitT,
+      windowEndSec: samples[samples.length - 1].t,
     };
   } finally {
     clearInterval(pinger);

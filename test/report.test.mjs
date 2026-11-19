@@ -51,7 +51,7 @@ test("markdown has a table per case with vanilla, candidate, delta, budget and a
   );
   assert.match(md, /### Growth with session size/);
   assert.match(md, /\| \+5\.0 \| \+6\.0 \| \+1\.0 \| <= \+5 MB \| PASS \|/);
-  assert.match(md, /\| candidate \| 190\.0 \|/);
+  assert.match(md, /\| candidate \| [\d.]+ s \| 190\.0 \|/);
 });
 
 test("markdown shows WAIVED with the reason and a PASS header when only waivers cover the failures", () => {

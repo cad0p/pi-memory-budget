@@ -1,5 +1,6 @@
-// RSS sampling of a process and its descendants.
-// Linux: /proc/<pid>/status VmRSS. macOS (and other unix): ps.
+// RSS sampling of a process and its descendants (recursive).
+// Linux: /proc/<pid>/status VmRSS plus /proc/<pid>/task/*/children for the
+// descendant walk (cheap: only the subtree, not all of /proc). macOS: ps.
 
 import { execFile } from "node:child_process";
 import fs from "node:fs";
@@ -57,6 +58,56 @@ export function descendantsRssKb(rows, root) {
   return total;
 }
 
+/** @param {number} pid @returns {number | null} VmRSS in KB */
+function procRssKb(pid) {
+  try {
+    return parseVmRss(fs.readFileSync(`/proc/${pid}/status`, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pids of all descendants of pid, via /proc/<pid>/task/<tid>/children (each task
+ * lists the same child pids). BFS over the subtree only: cheap enough to run
+ * every sample tick without stalling the harness event loop.
+ * @param {number} pid
+ * @returns {Set<number>}
+ */
+export function linuxDescendants(pid) {
+  /** @type {Set<number>} */
+  const out = new Set();
+  const queue = [pid];
+  /** @type {Set<number>} */
+  const seen = new Set([pid]);
+  while (queue.length) {
+    const p = /** @type {number} */ (queue.pop());
+    let tasks;
+    try {
+      tasks = fs.readdirSync(`/proc/${p}/task`);
+    } catch {
+      continue; // process gone
+    }
+    for (const t of tasks) {
+      let children;
+      try {
+        children = fs.readFileSync(`/proc/${p}/task/${t}/children`, "utf8");
+      } catch {
+        continue;
+      }
+      for (const c of children.trim().split(/\s+/)) {
+        const cp = Number(c);
+        if (cp > 0 && !seen.has(cp)) {
+          seen.add(cp);
+          out.add(cp);
+          queue.push(cp);
+        }
+      }
+    }
+  }
+  return out;
+}
+
 /** @param {string[]} args @returns {Promise<string>} */
 function run(args) {
   return new Promise((resolve) => {
@@ -66,53 +117,46 @@ function run(args) {
   });
 }
 
-/** Process table on Linux, from /proc (no ps dependency). */
-function linuxTable() {
-  /** @type {{ pid: number, ppid: number, rssKb: number }[]} */
-  const rows = [];
-  for (const name of fs.readdirSync("/proc")) {
-    if (!/^\d+$/.test(name)) continue;
-    try {
-      const stat = fs.readFileSync(`/proc/${name}/stat`, "utf8");
-      // comm may contain spaces and parens: parse after the last ")"
-      const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
-      const ppid = Number(rest[1]);
-      const status = fs.readFileSync(`/proc/${name}/status`, "utf8");
-      rows.push({ pid: Number(name), ppid, rssKb: parseVmRss(status) ?? 0 });
-    } catch {
-      // process vanished while scanning
-    }
-  }
-  return rows;
-}
-
 /**
- * RSS of pid in MB (null when the process is gone) and of its descendants.
+ * Total RSS of pid plus all descendants, and the split for diagnosis.
  * @param {number} pid
  * @param {{ withChildren?: boolean }} [opts]
- * @returns {Promise<{ rssMb: number | null, kidsMb: number }>}
+ * @returns {Promise<{ rssMb: number | null, mainMb: number | null, kidsMb: number }>}
+ *   rssMb null when the process is gone (kidsMb is still the last read: descendants may outlive it)
  */
 export async function readRss(pid, opts = {}) {
   const withChildren = opts.withChildren ?? true;
   if (process.platform === "linux") {
-    let rssKb = null;
-    try {
-      rssKb = parseVmRss(fs.readFileSync(`/proc/${pid}/status`, "utf8"));
-    } catch {
-      return { rssMb: null, kidsMb: 0 };
+    const mainKb = procRssKb(pid);
+    let kidsKb = 0;
+    if (withChildren) {
+      for (const d of linuxDescendants(pid)) kidsKb += procRssKb(d) ?? 0;
     }
-    const kidsKb = withChildren ? descendantsRssKb(linuxTable(), pid) : 0;
     return {
-      rssMb: rssKb === null ? null : rssKb / KB_PER_MB,
+      rssMb:
+        mainKb === null
+          ? kidsKb > 0
+            ? kidsKb / KB_PER_MB
+            : null
+          : (mainKb + kidsKb) / KB_PER_MB,
+      mainMb: mainKb === null ? null : mainKb / KB_PER_MB,
       kidsMb: kidsKb / KB_PER_MB,
     };
   }
-  // macOS / other unix: one ps call for the whole table (rows include pid itself).
+  // macOS / other unix: one ps call for the whole table (main row included).
   const table = parsePsTable(await run(["-A", "-o", "pid=,ppid=,rss="]));
   const self = table.find((r) => r.pid === pid);
-  if (!self) return { rssMb: null, kidsMb: 0 };
+  const kidsKb = withChildren ? descendantsRssKb(table, pid) : 0;
+  if (!self)
+    return {
+      rssMb: kidsKb > 0 ? kidsKb / KB_PER_MB : null,
+      mainMb: null,
+      kidsMb: kidsKb / KB_PER_MB,
+    };
+  const kids = withChildren ? kidsKb : 0;
   return {
-    rssMb: self.rssKb / KB_PER_MB,
-    kidsMb: descendantsRssKb(table, pid) / KB_PER_MB,
+    rssMb: (self.rssKb + kids) / KB_PER_MB,
+    mainMb: self.rssKb / KB_PER_MB,
+    kidsMb: kids / KB_PER_MB,
   };
 }

@@ -6,9 +6,12 @@ Extensions are loaded in-process, so whatever an extension allocates is added to
 
 ## How it measures
 
-For every case it starts `pi --mode rpc -ne -e <extension>…` (the candidate) and `pi --mode rpc -ne` (vanilla, same pi, same cwd, same env), one process at a time, and samples RSS every 200 ms for a window (default 30 s):
+For every case it starts `pi --mode rpc -ne -ns -np --no-themes --no-mcp -nc -e <extension>…` (the candidate) and the same command without `-e` (vanilla, same pi, same cwd, same env), one process at a time, and samples RSS every 200 ms for at least a minimum window (default 30 s). The isolation flags are always passed so that the only difference between the two is the extension under test: no skills, prompt templates, themes, MCP servers or context files.
 
-- **steady** = median RSS over the last 10 s; **spike** = max RSS; **released** = last sample.
+A run first **waits for quiescence**: the first point at which the trailing 10 s of total RSS has a range under 5 MB, capped by `--settle-max` (default 120 s). If the process never settles, steady is reported as *not settled* and the steady check fails with that reason. The run keeps sampling until the release after the peak is observable (peak + `spikeReleaseSeconds`, bounded), so a release is never failed just because the window ended:
+
+- **total RSS** = the pi pid plus every descendant process (recursive) — an extension cannot hide memory in a spawned helper; **main** and **children** are still reported separately for diagnosis.
+- **steady** = median total RSS of the settled 10 s window; **spike** = max; **released** = last sample.
 - Linux reads `/proc/<pid>/status` (`VmRSS`), macOS uses `ps`. Descendant processes of pi are reported separately as *children*.
 - It sends RPC `get_state` every 100 ms and reports the largest response gap, as a check on event-loop blocking (reported, not budgeted).
 - Each configuration runs N times (default 3) and the **median** is used. RSS is noisy by a few MB, so the vanilla baseline always runs in the same job, interleaved with the candidate.
@@ -33,10 +36,10 @@ Approved defaults; all in MB except the release time. Every value is "candidate 
 | `steadyLong` | 20 | steady, long |
 | `growth2x` | 5 | delta(long2x) - delta(long): growth proportional to the session size |
 | `spike` | 100 | max RSS of the candidate minus vanilla steady, every case |
-| `spikeReleaseSeconds` | 30 | seconds from the peak until the delta is back under the steady budget |
+| `spikeReleaseSeconds` | 30 | seconds from the peak until the delta is back under the steady budget for 3 consecutive samples; the run extends past the window to observe it. If it still cannot be observed (process died, caps), the check is INCONCLUSIVE — a distinct non-zero verdict, never a plain FAIL |
 | `regression` | 5 | candidate minus a baseline build (`--baseline-extension`), every case, only when given |
 
-If the candidate's own steady level is over the steady budget, the release check measures against that level (+5 MB noise) so one steady problem is not reported twice.
+If the candidate's own settled level is over the steady budget, the release check measures against that level (+5 MB noise) so one steady problem is not reported twice.
 
 ## Usage
 
@@ -60,7 +63,7 @@ pi is resolved from `--pi <cmd>`, then `node_modules/.bin/pi` of `--cwd`, then `
 | `--cwd <dir>` | working directory of pi (a workspace or vault the extension needs) |
 | `--env K=V` | environment variable for every pi process, repeatable |
 | `--runs <n>` | runs per configuration and case (default 3) |
-| `--window <s>` | window per run (default 30), `--steady-seconds` (default 10) |
+| `--window <s>` | minimum window per run (default 30), `--steady-seconds` (default 10), `--settle-max` (default 120) |
 | `--session-mb <n>` | long session size in MiB (default 200) |
 | `--cases <list>` | `fresh,long,long2x` subset |
 | `--seed <n>` | fixture seed (default 1) |

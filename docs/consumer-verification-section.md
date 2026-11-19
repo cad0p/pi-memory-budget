@@ -9,7 +9,7 @@ Every pi extension must stay within strict memory budgets compared with vanilla 
 | Steady, fresh session | <= +20 MB |
 | Steady, long session (200 MB synthetic) | <= +20 MB |
 | Growth with session size (2x vs 1x) | <= +5 MB more; growth proportional to the session needs a justification in the PR |
-| Transient spike | <= +100 MB, and back under the steady budget within 30 s |
+| Transient spike | <= +100 MB, and back under the steady budget within 30 s of the peak (held for 3 samples) |
 | Regression vs `main` | <= +5 MB, otherwise justified in the PR |
 
 - **CI:** the `memory-budget` step runs `pnpm exec pi-memory-budget run --extension <path> --config budget.json` on `ubuntu-latest` and fails the job on any FAIL. The report is in the job summary and the `memory-budget` artifact.
@@ -24,4 +24,5 @@ Every pi extension must stay within strict memory budgets compared with vanilla 
 - **Regression tests:** a fix for a memory problem lands with a test that fails on the old behaviour (for example a bound on what is retained per session entry), not only with the budget run.
 - **Waivers:** a budget that cannot be met is never skipped. Put it in `budget.json` under `waivers` with a reason that links the issue; the report prints it as WAIVED with the measured value, and the PR body must say why.
 - **Needs a workspace** (a vault, a repo)? Pass `--cwd` and `--env`, or a `setup` command, in `budget.json`.
-- **Reading the numbers:** medians of 3 runs; RSS noise is a few MB. A result within 5 MB of a budget deserves a rerun with `--runs 5` before a verdict.
+- **What is measured:** total RSS of the pi process plus every descendant (an extension cannot hide memory in a spawned helper), after a quiescence wait (RSS stable for 10 s, capped at `--settle-max` 120 s). An INCONCLUSIVE verdict (release could not be observed, never-settled reference) fails the job like a FAIL and needs a human look, not a waiver.
+- **Reading the numbers:** medians of 3 runs; RSS noise is a few MB but tens of MB on big sessions. A result within 5 MB of a budget deserves a rerun with `--runs 5` before a verdict.

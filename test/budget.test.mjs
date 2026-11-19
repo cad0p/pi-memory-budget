@@ -101,17 +101,32 @@ test("spike vs vanilla steady, and release time under the steady budget", () => 
   );
 });
 
-test("release: a candidate that never settles is FAIL and explained; late release is FAIL", () => {
-  // keeps climbing to the end of the window: the peak is the last sample
+test("release: unobservable is INCONCLUSIVE (distinct, non-zero exit), never-released-in-window is FAIL", () => {
+  // keeps climbing to the end of the window: peak is the last sample, the 30 s
+  // release budget cannot be observed (runner would extend a real run; fake
+  // windowEndSec stays at the window)
   const ramp = fakeRun((t) => 150 + t * 5);
   const rel = get(
     evaluate({ fresh: { vanilla: [flat(150)], candidate: [ramp] } }, opts)
       .checks,
     "release:fresh",
   );
-  assert.equal(rel.status, "FAIL");
+  assert.equal(rel.status, "INCONCLUSIVE");
   assert.equal(rel.value, null);
-  assert.match(rel.note ?? "", /over vanilla at the end of the window/);
+
+  // observed the whole peak+30s window and never released: FAIL
+  // (declining to the end of the window: observable, still over budget)
+  const neverReleases = fakeRun((t) => 500 - t * 3, { window: 35 });
+  const rel2 = get(
+    evaluate(
+      { fresh: { vanilla: [flat(150)], candidate: [neverReleases] } },
+      { ...opts, windowSec: 40 },
+    ).checks,
+    "release:fresh",
+  );
+  assert.equal(rel2.status, "FAIL");
+  assert.equal(rel2.value, null);
+  assert.match(rel2.note ?? "", /over vanilla at the end of the window/);
 
   // peak at t=1, released at t=25: 24 s after the peak, under the 30 s limit
   const slow = fakeRun((t) => (t < 1 ? 300 : t < 25 ? 250 : 155), {
@@ -151,16 +166,29 @@ test("release: a steady level over budget is judged by the steady check, release
   const rel = get(stuck.checks, "release:fresh");
   assert.equal(rel.status, "PASS");
   assert.match(rel.note ?? "", /measured against its own steady level/);
-  // high steady plus a transient peak that never comes back down to it still fails
-  const peaky = fakeRun((t) => (t < 25 ? 400 : 300), { window: 30 });
+  // a transient that falls back to the (over-budget) own level within the limit passes
+  const peaky = fakeRun((t) => (t < 25 ? 400 : 330), { window: 40 });
   assert.equal(
     get(
-      evaluate({ fresh: { vanilla: [flat(150)], candidate: [peaky] } }, opts)
-        .checks,
+      evaluate(
+        { fresh: { vanilla: [flat(150)], candidate: [peaky] } },
+        { ...opts, windowSec: 40 },
+      ).checks,
       "release:fresh",
     ).status,
     "PASS",
   );
+  // a transient that takes longer than the limit to come back down fails
+  const late = fakeRun((t) => (t < 35 ? 400 : 330), { window: 45 });
+  const lateRel = get(
+    evaluate(
+      { fresh: { vanilla: [flat(150)], candidate: [late] } },
+      { ...opts, windowSec: 45 },
+    ).checks,
+    "release:fresh",
+  );
+  assert.equal(lateRel.status, "FAIL");
+  assert.ok(lateRel.value !== null && lateRel.value > 30);
 });
 
 test("regression vs baseline extension, per case, only when a baseline ran", () => {

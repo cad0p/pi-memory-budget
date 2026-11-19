@@ -229,6 +229,34 @@ test(
   },
 );
 
+test(
+  "an extension whose child holds ~60 MB fails steady anyway (children are budgeted)",
+  { skip, timeout: 600000 },
+  () => {
+    const r = runCli([
+      "--extension",
+      ext("ext-child.js"),
+      "--cases",
+      "fresh",
+      "--runs",
+      "1",
+    ]);
+    assert.equal(r.status, 1, `${r.stderr}\n${r.md}`);
+    const steady = r.json.checks.find(
+      (/** @type {{id: string}} */ c) => c.id === "steadyFresh",
+    );
+    assert.equal(steady.status, "FAIL");
+    assert.ok(
+      steady.value > 40,
+      `total +${steady.value} MB including the child`,
+    );
+    assert.ok(
+      r.json.aggregates.fresh.candidate.childrenSteadyMb > 45,
+      `children ${r.json.aggregates.fresh.candidate.childrenSteadyMb}`,
+    );
+  },
+);
+
 test("no pi process is left behind", { skip }, () => {
   const ps = spawnSync("ps", ["-A", "-o", "args="], {
     encoding: "utf8",

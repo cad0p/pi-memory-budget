@@ -24,12 +24,17 @@ function alive(pid) {
   }
 }
 
-test("buildPiArgs: rpc mode, session or --no-session, -ne, one -e per extension", () => {
+test("buildPiArgs: rpc, session or --no-session, full isolation flags, one -e per extension", () => {
   assert.deepEqual(buildPiArgs({ extensions: [], sessionFile: null }), [
     "--mode",
     "rpc",
     "--no-session",
     "-ne",
+    "-ns",
+    "-np",
+    "--no-themes",
+    "--no-mcp",
+    "-nc",
   ]);
   assert.deepEqual(
     buildPiArgs({
@@ -43,6 +48,11 @@ test("buildPiArgs: rpc mode, session or --no-session, -ne, one -e per extension"
       "--session",
       "/s.jsonl",
       "-ne",
+      "-ns",
+      "-np",
+      "--no-themes",
+      "--no-mcp",
+      "-nc",
       "-e",
       "/a.ts",
       "-e",
@@ -105,13 +115,24 @@ test("measureRun samples RSS, pings, passes cwd/env/args and leaves no process b
     "rpc",
     "--no-session",
     "-ne",
+    "-ns",
+    "-np",
+    "--no-themes",
+    "--no-mcp",
+    "-nc",
     "-e",
     "/ext/one.ts",
   ]);
   assert.equal(fs.realpathSync(info.cwd), fs.realpathSync(dir));
   assert.equal(info.env, "probe");
-  assert.ok(r.steadyMb > 60, `steady ${r.steadyMb}`);
-  assert.ok(r.spikeMb >= r.steadyMb && r.spikeMb >= r.releasedMb);
+  assert.ok(r.settled, "fake pi is flat after allocation: settles");
+  assert.ok(r.steadyMb !== null && r.steadyMb > 60, `steady ${r.steadyMb}`);
+  assert.ok(
+    r.spikeMb >= r.steadyMb &&
+      r.steadyMb !== null &&
+      r.releasedMb !== null &&
+      r.spikeMb >= r.releasedMb,
+  );
   assert.ok(
     r.samples.length >= 10 && r.samples.length <= 20,
     `samples ${r.samples.length}`,
@@ -140,10 +161,15 @@ test("measureRun reports descendant processes separately and kills them too", as
     steadySec: 2,
   });
   const info = JSON.parse(fs.readFileSync(log, "utf8"));
-  assert.ok(r.childrenSteadyMb > 45, `children ${r.childrenSteadyMb}`);
   assert.ok(
-    r.steadyMb < 120,
-    "the child's memory is not counted in the pi process",
+    r.childrenSteadyMb !== null && r.childrenSteadyMb > 45,
+    `children ${r.childrenSteadyMb}`,
+  );
+  assert.ok(
+    r.mainSteadyMb !== null &&
+      r.steadyMb !== null &&
+      r.steadyMb > r.mainSteadyMb + 40,
+    "children are folded into the total (steady), reported separately as main/kids",
   );
   assert.ok(info.argv.includes("--session"));
   await new Promise((res) => setTimeout(res, 200));

@@ -378,6 +378,58 @@ export function writeFixture(file, opts) {
           "custom_message",
         );
       }
+      if (r() < 0.02) {
+        // usage: model-attributed accounting that is not a message (e.g. cache
+        // warming); hidden from the conversation tree
+        add(
+          {
+            type: "usage",
+            kind: "cache_warm",
+            provider: "anthropic",
+            model: "claude-sonnet-4-5",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 20000 + Math.floor(r() * 80000),
+              cacheWrite: 0,
+              totalTokens: 0,
+              cost: {
+                input: 0,
+                output: 0,
+                cacheRead: 0.01,
+                cacheWrite: 0,
+                total: 0.01,
+              },
+            },
+          },
+          "usage",
+        );
+      }
+      if (r() < 0.004) {
+        // compaction: summary + prompt checkpoint; firstKeptEntryId keeps the
+        // tail of the history, like a real long session
+        const kept = branchPoints[Math.max(0, branchPoints.length - 1)];
+        add(
+          {
+            type: "compaction",
+            summary: text(logInt(500, 4000)),
+            firstKeptEntryId: kept,
+            tokensBefore: 60000 + Math.floor(r() * 100000),
+            systemMessage: {
+              role: "system",
+              content: "",
+              sections: { preamble: text(600) },
+              toolsAdded: [],
+              timestamp: baseMs + clock,
+            },
+            details: {
+              readFiles: [`src/${word(r)}.ts`, `docs/${word(r)}.md`],
+              modifiedFiles: [`src/${word(r)}.ts`],
+            },
+          },
+          "compaction",
+        );
+      }
       if (r() < 0.01) {
         add(
           {

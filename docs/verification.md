@@ -42,7 +42,7 @@ A second reviewer (human or agent) who did not write the change checks:
 
 | Change | Proof |
 |---|---|
-| Sampler, runner, window logic | run `pi-memory-budget run` with `--runs 1` on a known extension, compare against `grep VmRSS /proc/<pid>/status` taken by hand at the same moment; check `pgrep -f -- "--mode rpc"` is empty afterwards |
+| Sampler, runner, settle/window logic | run `pi-memory-budget run` with `--runs 1` on a known extension, compare against `grep VmRSS /proc/<pid>/status` plus the `task/*/children` descendants, taken by hand at the same moment; check `pgrep -f -- "--mode rpc"` is empty afterwards |
 | Fixture generator | `pi-memory-budget fixture --mb 5 --out f.jsonl`, open it with `pi --mode rpc --session f.jsonl -ne` and RPC `get_entries`: the count must equal the generator's entry count (the e2e test automates this); two runs with the same seed must be byte-identical (`cmp`) |
 | Budgets, evaluation, report | unit tests plus one real run with a waiver and one without, pasting both reports in the PR |
 | pi version bump (devDependency) | full e2e on both OSes; if the session format changed, update `src/fixture.mjs` against pi's `docs/session-format.md` |
