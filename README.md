@@ -8,8 +8,9 @@ Extensions are loaded in-process, so whatever an extension allocates is added to
 
 For every case it starts `pi --mode rpc -ne -ns -np --no-themes --no-mcp -nc -e <extension>…` (the candidate) and the same command without `-e` (vanilla, same pi, same cwd, same env), one process at a time, and samples RSS every 200 ms for at least a minimum window (default 30 s). The isolation flags are always passed so that the only difference between the two is the extension under test: no skills, prompt templates, themes, MCP servers or context files.
 
-A run first **waits for quiescence**: the first point at which the trailing 10 s of total RSS has a range under 5 MB, capped by `--settle-max` (default 120 s). If the process never settles, steady is reported as *not settled* and the steady check fails with that reason. The run keeps sampling until the release after the peak is observable (peak + `spikeReleaseSeconds`, bounded), so a release is never failed just because the window ended:
+A run first **waits for quiescence**, but never before `--settle-min` (default 30 s) has passed — pi does small amounts of work in its first half minute, and the GC harness has forced full GCs by then, identically in every configuration. Quiescence means the first point at which the trailing 10 s of total RSS has a range under 5 MB, capped by `--settle-max` (default 120 s). If the process never settles, steady is reported as *not settled* and the steady check fails with that reason. The run keeps sampling until the release after the peak is observable (peak + `spikeReleaseSeconds`, bounded), so a release is never failed just because the window ended:
 
+- **Offline**: every pi run gets `PI_OFFLINE=1`, `PI_SKIP_VERSION_CHECK=1`, `PI_TELEMETRY=0` — pi's startup network work (model catalog refresh, version check, telemetry) allocates tens of MB at an unpredictable time and made the vanilla level bimodal (120–178 MB on a quiet box). With it off, vanilla settles within a few MB. `--env` overrides these if a different value is genuinely needed. Limitation: an extension whose startup itself needs the network is measured without that traffic — if its cost matters, measure it on a longer window and read the transient spike, not steady.
 - **GC-normalized**: an idle pi allocates almost nothing, so left to itself V8 never runs a major GC and the settled level is whatever garbage was uncollected when allocation stopped — run-to-run noise of tens of MB. Every pi run (vanilla and candidate alike, so it cancels out) is therefore started with `--expose-gc` — passed through `NODE_OPTIONS`, which reaches node whether pi is a global launcher, a `node_modules/.bin` shim or a plain `node cli.js` — plus a tiny harness extension (`src/gc-harness.js`) that forces major GCs at start, whenever the heap has grown by ~4 MB, and periodically. *steady* measures retained memory, not GC timing. `--no-gc` disables it. Garbage only collects in the pi process itself; children are measured exactly as before. On glibc, freed V8 pages and large buffers go back to the OS promptly, so the post-GC level is observable directly; anything malloc keeps is stable across runs and simply part of the measured level.
 
 - **total RSS** = the pi pid plus every descendant process (recursive) — an extension cannot hide memory in a spawned helper; **main** and **children** are still reported separately for diagnosis.
@@ -65,6 +66,7 @@ pi is resolved from `--pi <cmd>`, then `node_modules/.bin/pi` of `--cwd`, then `
 | `--cwd <dir>` | working directory of pi (a workspace or vault the extension needs) |
 | `--env K=V` | environment variable for every pi process, repeatable |
 | `--runs <n>` | runs per configuration and case (default 3) |
+| `--settle-min <s>` | no settle before this time; the GC harness has collected by then (default 30) |
 | `--window <s>` | minimum window per run (default 30), `--steady-seconds` (default 10), `--settle-max` (default 120) |
 | `--session-mb <n>` | long session size in MiB (default 200) |
 | `--cases <list>` | `fresh,long,long2x` subset |
@@ -107,7 +109,7 @@ A single run needs about `runs x cases x configurations x window` seconds (defau
 ```
 
 - *Vanilla* and *Candidate* are medians in MB (steady for the steady check, candidate max for the spike); *Delta* is what the extension adds.
-- A second table per case lists steady, the run-to-run steady spread, spike, released, children steady and the max ping gap of every configuration. A large *children* value means the extension spawns processes that the budget on the pi process does not see. A large vanilla *spread* explains an INCONCLUSIVE verdict.
+- A second table per case lists steady, the run-to-run steady spread, spike, released, children steady and the max ping gap of every configuration, plus post-GC heap/external/arrayBuffers numbers from the GC harness (diagnostic only — budgets stay on total RSS). A large *children* value means the extension spawns processes that the budget on the pi process does not see. A large vanilla *spread* explains an INCONCLUSIVE verdict.
 - *Growth with session size* compares the long and long2x deltas. A FAIL means the extension's memory scales with the session: fix it, or justify it in the PR.
 - JSON (`schema: pi-memory-budget/1`) has the same checks plus aggregates and the raw RSS samples of every run (`[t seconds, rss MB, children MB]`).
 
