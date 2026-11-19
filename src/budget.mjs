@@ -82,7 +82,22 @@ export function resolveBudgets(budgets, waivers) {
  * @property {boolean} settled whether every run settled
  * @property {number} maxGapMs median of the per-run max ping gap
  * @property {number} worstGapMs worst ping gap over all runs
+ * @property {{ heapUsedMb: number, externalMb: number, arrayBuffersMb: number } | null} gcDiag median post-GC heap numbers (diagnostic)
  */
+
+/** @param {RunResult[]} runs */
+function aggDiag(runs) {
+  const d = runs.map((r) => r.gcDiag).filter((x) => x);
+  if (!d.length) return null;
+  /** @param {"heapUsedMb"|"externalMb"|"arrayBuffersMb"} k */
+  const m = (k) =>
+    median(d.map((x) => /** @type {NonNullable<typeof x>} */ (x)[k]));
+  return {
+    heapUsedMb: m("heapUsedMb"),
+    externalMb: m("externalMb"),
+    arrayBuffersMb: m("arrayBuffersMb"),
+  };
+}
 
 /**
  * @param {RunResult[]} runs
@@ -119,6 +134,7 @@ export function aggregate(runs) {
     childrenSteadyMb: med(runs.map((r) => r.childrenSteadyMb)),
     maxGapMs: median(runs.map((r) => r.maxGapMs)),
     worstGapMs: max(runs.map((r) => r.maxGapMs)),
+    gcDiag: aggDiag(runs),
   };
 }
 

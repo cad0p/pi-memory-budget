@@ -18,6 +18,7 @@ run options:
   --window <s>                 measurement window per run in seconds (default 30)
   --steady-seconds <s>         settled-window length for steady RSS (default 10)
   --settle-max <s>             cap on the quiescence wait; "not settled" past it (default 120)
+  --settle-min <s>             no settle before this time; every run is forced-GC'd by then (default 30)
   --session-mb <n>             size of the long session fixture in MiB (default 200)
   --cases <list>               comma-separated: fresh,long,long2x (default all)
   --seed <n>                   fixture seed (default 1)
@@ -46,6 +47,7 @@ exceeds the budget, or a release could not be observed).
  * @property {number | undefined} window
  * @property {number | undefined} steadySeconds
  * @property {number | undefined} settleMax
+ * @property {number | undefined} settleMin
  * @property {number | undefined} sessionMb
  * @property {string[] | undefined} cases
  * @property {number | undefined} seed
@@ -102,6 +104,7 @@ export function parseRunArgs(argv) {
         window: { type: "string" },
         "steady-seconds": { type: "string" },
         "settle-max": { type: "string" },
+        "settle-min": { type: "string" },
         "session-mb": { type: "string" },
         cases: { type: "string" },
         seed: { type: "string" },
@@ -146,6 +149,7 @@ export function parseRunArgs(argv) {
     window: num(v.window, "window", { min: 1 }),
     steadySeconds: num(v["steady-seconds"], "steady-seconds", { min: 1 }),
     settleMax: num(v["settle-max"], "settle-max", { min: 1 }),
+    settleMin: num(v["settle-min"], "settle-min", { min: 0 }),
     sessionMb: num(v["session-mb"], "session-mb", { min: 1 }),
     cases,
     seed: num(v.seed, "seed", { integer: true }),

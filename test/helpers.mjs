@@ -25,6 +25,7 @@ export function fakeRun(fn, o = {}) {
     exitT: o.exitT ?? null,
     windowEndSec: window,
     gcReady: null,
+    gcDiag: null,
   };
 }
 

@@ -54,7 +54,12 @@ export default function pmbGcHarness() {
     const used = process.memoryUsage().heapUsed;
     if (used - base >= STEP_MB * 1048576 || ticks % 10 === 0) {
       now();
-      base = process.memoryUsage().heapUsed;
+      const m = process.memoryUsage();
+      base = m.heapUsed;
+      // Diagnostic only (post-GC numbers); budgets stay on total RSS.
+      process.stderr.write(
+        `${MARK} diag ${JSON.stringify({ heapUsed: m.heapUsed, external: m.external, arrayBuffers: m.arrayBuffers })}\n`,
+      );
     }
   }, INTERVAL_MS);
   // Never keep pi alive for the harness alone.

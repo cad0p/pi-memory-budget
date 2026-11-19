@@ -117,6 +117,7 @@ export async function runBudget(o, hooks = {}) {
             windowSec: o.window,
             steadySec: Math.min(o.steadySeconds, o.window),
             settleMaxSec: o.settleMax,
+            settleMinSec: o.settleMin,
             releaseSec: o.budgets.spikeReleaseSeconds,
             extraArgs: o.piArgs,
           });
@@ -150,6 +151,7 @@ export async function runBudget(o, hooks = {}) {
     steadySec: Math.min(o.steadySeconds, o.window),
     sessionMb: o.sessionMb,
     settleMaxSec: o.settleMax,
+    settleMinSec: o.settleMin,
     seed: o.seed,
     gc: o.gc,
     cases: o.cases,

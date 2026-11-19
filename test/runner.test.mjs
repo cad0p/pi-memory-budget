@@ -5,7 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { buildPiArgs, resolvePi, splitCommand } from "../src/pi.mjs";
-import { measureRun } from "../src/runner.mjs";
+import { measureRun, parseGcDiag } from "../src/runner.mjs";
 
 const fakePi = fileURLToPath(
   new URL("./fixtures/fake-pi.mjs", import.meta.url),
@@ -200,6 +200,7 @@ test("gc normalization: harness -e in the argv, --expose-gc in NODE_OPTIONS, off
     ["-e", "/harness/gc-harness.js", "-e", "/ext/one.ts"],
   );
   assert.match(info.nodeOptions ?? "", /--expose-gc/);
+  assert.equal(info.offline, "1", "pi kept off the network in every config");
   assert.equal(info.gcExposed, true, "fake pi saw globalThis.gc");
   assert.equal(r.gcReady, false, "fake pi loads no real extension: no marker");
 
@@ -241,6 +242,14 @@ test("gc normalization: harness -e in the argv, --expose-gc in NODE_OPTIONS, off
   assert.equal(info3.argv.includes("gc-harness"), false);
   assert.equal(info3.nodeOptions, null);
   assert.equal(info3.gcExposed, false);
+});
+
+test("parseGcDiag reads the last harness diag line", () => {
+  assert.equal(parseGcDiag("nothing"), null);
+  const d = parseGcDiag(
+    'pmb-gc: diag {"heapUsed":1048576,"external":2097152,"arrayBuffers":0}\npmb-gc: diag {"heapUsed":3145728,"external":2097152,"arrayBuffers":1048576}\n',
+  );
+  assert.deepEqual(d, { heapUsedMb: 3, externalMb: 2, arrayBuffersMb: 1 });
 });
 
 test("measureRun fails loudly, and cleans up, when pi exits early", async () => {

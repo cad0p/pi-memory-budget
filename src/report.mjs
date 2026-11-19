@@ -26,6 +26,13 @@ function statusCell(c) {
   return c.status === "FAIL" && c.note ? `FAIL: ${c.note}` : c.status;
 }
 
+/** @param {{ heapUsedMb: number, externalMb: number, arrayBuffersMb: number } | null | undefined} d */
+function gcDiagCell(d) {
+  return d
+    ? `${fmt(d.heapUsedMb)} / ${fmt(d.externalMb)} / ${fmt(d.arrayBuffersMb)}`
+    : "n/a";
+}
+
 /**
  * @typedef {object} ReportInput
  * @property {ReturnType<typeof import("./budget.mjs").evaluate>} result
@@ -87,8 +94,8 @@ export function renderMarkdown(input) {
     }
     out.push("");
     out.push(
-      "| Configuration | settle at | steady | steady spread | spike | released | main steady | children steady | max ping gap |",
-      "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+      "| Configuration | settle at | steady | steady spread | spike | released | main steady | children steady | max ping gap | post-GC heap/external/arrayBuffers (diagnostic) |",
+      "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     );
     for (const [name, a] of Object.entries(agg)) {
       const settle =
@@ -104,7 +111,7 @@ export function renderMarkdown(input) {
             ? "0.0"
             : `${fmt(a.steadySpreadMb)} (${fmt(a.steadyMinMb)}-${fmt(a.steadyMaxMb)})`;
       out.push(
-        `| ${name} | ${settle} | ${a.steadyMb === null ? "not settled" : fmt(a.steadyMb)} | ${spread} | ${fmt(a.spikeMb)} | ${fmt(a.releasedMb)} | ${fmt(a.mainSteadyMb)} | ${fmt(a.childrenSteadyMb)} | ${fmt(a.maxGapMs, 0)} ms |`,
+        `| ${name} | ${settle} | ${a.steadyMb === null ? "not settled" : fmt(a.steadyMb)} | ${spread} | ${fmt(a.spikeMb)} | ${fmt(a.releasedMb)} | ${fmt(a.mainSteadyMb)} | ${fmt(a.childrenSteadyMb)} | ${fmt(a.maxGapMs, 0)} ms | ${gcDiagCell(a.gcDiag)} |`,
       );
     }
     out.push("");
@@ -156,6 +163,7 @@ export function renderJson(input) {
         childrenSteadyMb: r.childrenSteadyMb,
         childrenSpikeMb: r.childrenSpikeMb,
         gcReady: r.gcReady,
+        gcDiag: r.gcDiag,
         maxGapMs: r.maxGapMs,
         readyMs: r.readyMs,
         pings: r.pings,
