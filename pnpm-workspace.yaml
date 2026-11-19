@@ -1,0 +1,7 @@
+# pi-coding-agent (devDependency, used by the CI end-to-end run) pulls in
+# packages with install scripts that this repo does not need.
+allowBuilds:
+  esbuild: false
+  "@google/genai": false
+  protobufjs: false
+  glimpseui: false
