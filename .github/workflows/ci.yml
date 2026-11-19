@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v6
+        with:
+          # Major-only pin: stay on pnpm 11 (new majors can change lockfile
+          # format / CLI surface) while 11.x minors flow in automatically.
+          # The `packageManager` field is intentionally absent so local
+          # machines can use their own pnpm without the launcher
+          # self-switching. `--frozen-lockfile` keeps installs deterministic.
+          version: 11
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: pnpm lint
+      - name: Type check
+        run: pnpm typecheck
+      - name: Unit tests
+        run: pnpm test
+      # One real budget check: the CLI against the installed pi (devDependency)
+      # and the fixture extensions: ~5 MB passes, ~60 MB fails, growth fails,
+      # waiver passes, the synthetic session loads in pi.
+      - name: End-to-end budget check (real pi)
+        run: pnpm test:e2e
