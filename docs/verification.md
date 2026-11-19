@@ -19,7 +19,9 @@ The two validators (`validate-package-version`, `validate-release-pr`) only chec
 - lint, typecheck and unit tests pass on both OSes;
 - the e2e run shows that `ext-pass.js` (about 5 MB) passes with exit 0, `ext-leak.js` (about 60 MB) fails the steady budget with exit 1 and is WAIVED (exit 0) when the config carries a reason, `ext-grow.js` (memory proportional to the session) fails `growth2x`, pi loads the generated fixture with the same entry count, and no pi process is left behind.
 
-If an e2e assertion flakes on a runner, do not widen it silently: the margins are 5 MB (pass) against 20 MB budget and 60 MB (fail) against it. A flake means the measurement got noisier than that: investigate the sampler or the window first.
+Steady is GC-normalized since #3: every pi process runs with `--expose-gc` and the harness extension in `src/gc-harness.js`, so the margin being measured is retained memory, not uncollected garbage. On top of that, a check whose reference configuration (vanilla, or the baseline extension for `regression`) has a run-to-run steady spread larger than the check's own budget is INCONCLUSIVE — the CLI then exits 3 (no FAIL) — instead of turning baseline noise into a red-herring PASS or FAIL. A runner flake should therefore show as INCONCLUSIVE, never as a wrong verdict.
+
+If an e2e assertion flakes on a runner, do not widen it silently: the margins are 5 MB (pass) against 20 MB budget and 60 MB (fail) against it, and the GC harness keeps steady noise in the low MB range. A flake means the measurement got noisier than that: check the run-to-run spread in the JSON report (`aggregates.<case>.<config>.steadySpreadMb`) and investigate the sampler or the window first.
 
 ## Offline gates (before pushing)
 
