@@ -177,6 +177,72 @@ test("measureRun reports descendant processes separately and kills them too", as
   assert.equal(alive(info.kid), false, "child process of pi is gone too");
 });
 
+test("gc normalization: harness -e in the argv, --expose-gc in NODE_OPTIONS, off with gc:false", async () => {
+  const log = path.join(dir, "log-gc.json");
+  const r = await measureRun({
+    pi,
+    extensions: ["/ext/one.ts"],
+    harnessExtensions: ["/harness/gc-harness.js"],
+    gc: true,
+    sessionFile: null,
+    cwd: dir,
+    env: { ...process.env, FAKE_PI_MB: "10", FAKE_PI_LOG: log },
+    windowSec: 2,
+    steadySec: 1,
+  });
+  const info = JSON.parse(fs.readFileSync(log, "utf8"));
+  // the harness loads before the extension under test, in every configuration
+  assert.deepEqual(
+    info.argv.filter(
+      (/** @type {string} */ a) =>
+        a === "-e" || a.endsWith(".ts") || a.endsWith(".js"),
+    ),
+    ["-e", "/harness/gc-harness.js", "-e", "/ext/one.ts"],
+  );
+  assert.match(info.nodeOptions ?? "", /--expose-gc/);
+  assert.equal(info.gcExposed, true, "fake pi saw globalThis.gc");
+  assert.equal(r.gcReady, false, "fake pi loads no real extension: no marker");
+
+  // an existing NODE_OPTIONS is preserved
+  const log2 = path.join(dir, "log-gc2.json");
+  await measureRun({
+    pi,
+    extensions: [],
+    harnessExtensions: [],
+    gc: true,
+    sessionFile: null,
+    cwd: dir,
+    env: {
+      ...process.env,
+      NODE_OPTIONS: "--no-warnings",
+      FAKE_PI_MB: "10",
+      FAKE_PI_LOG: log2,
+    },
+    windowSec: 2,
+    steadySec: 1,
+  });
+  const info2 = JSON.parse(fs.readFileSync(log2, "utf8"));
+  assert.match(info2.nodeOptions, /--no-warnings --expose-gc/);
+
+  // gc:false: no flag, no harness — the process runs exactly as before
+  const log3 = path.join(dir, "log-gc3.json");
+  await measureRun({
+    pi,
+    extensions: ["/ext/one.ts"],
+    harnessExtensions: ["/harness/gc-harness.js"],
+    gc: false,
+    sessionFile: null,
+    cwd: dir,
+    env: { ...process.env, FAKE_PI_MB: "10", FAKE_PI_LOG: log3 },
+    windowSec: 2,
+    steadySec: 1,
+  });
+  const info3 = JSON.parse(fs.readFileSync(log3, "utf8"));
+  assert.equal(info3.argv.includes("gc-harness"), false);
+  assert.equal(info3.nodeOptions, null);
+  assert.equal(info3.gcExposed, false);
+});
+
 test("measureRun fails loudly, and cleans up, when pi exits early", async () => {
   await assert.rejects(
     measureRun({

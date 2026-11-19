@@ -23,6 +23,8 @@ run options:
   --seed <n>                   fixture seed (default 1)
   --pi <cmd>                   pi command (default: ./node_modules/.bin/pi of --cwd, then PATH)
   --pi-arg <arg>               extra argument for every pi process (repeatable)
+  --no-gc                      do not start pi with --expose-gc and the GC harness
+                               (default: on — steady is measured after forced GCs)
   --report <file.md>           write the markdown report
   --json <file.json>           write the JSON report
   --fixtures-dir <dir>         fixture cache (default: <tmpdir>/pi-memory-budget)
@@ -50,6 +52,7 @@ Exit code: 0 all budgets pass or are waived, 1 a budget FAILs, 2 usage or runtim
  * @property {string | undefined} report
  * @property {string | undefined} json
  * @property {string | undefined} fixturesDir
+ * @property {boolean} noGc
  * @property {boolean} quiet
  */
 
@@ -105,6 +108,7 @@ export function parseRunArgs(argv) {
         report: { type: "string" },
         json: { type: "string" },
         "fixtures-dir": { type: "string" },
+        "no-gc": { type: "boolean" },
         quiet: { type: "boolean" },
         help: { type: "boolean", short: "h" },
       },
@@ -148,6 +152,7 @@ export function parseRunArgs(argv) {
     report: v.report,
     json: v.json,
     fixturesDir: v["fixtures-dir"],
+    noGc: v["no-gc"] ?? false,
     quiet: v.quiet ?? false,
     help: v.help ?? false,
   };

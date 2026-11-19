@@ -54,6 +54,8 @@ const SETTLE_RANGE_MB = 5;
  * @typedef {object} MeasureSpec
  * @property {{ command: string, args: string[] }} pi
  * @property {string[]} extensions
+ * @property {string[]} [harnessExtensions] extensions loaded in every configuration alike (GC harness)
+ * @property {boolean} [gc] start pi with --expose-gc via NODE_OPTIONS and load the GC harness (default true)
  * @property {string | null} sessionFile
  * @property {string} cwd
  * @property {NodeJS.ProcessEnv} env
@@ -75,6 +77,7 @@ const SETTLE_RANGE_MB = 5;
  *   stderrTail: string,
  *   exitT: number | null,
  *   windowEndSec: number,
+ *   gcReady: boolean | null,
  * }} RunResult
  */
 
@@ -89,17 +92,31 @@ export async function measureRun(spec) {
   const pingMs = spec.pingMs ?? 100;
   const settleMaxSec = spec.settleMaxSec ?? 120;
   const releaseSec = spec.releaseSec ?? 0;
+  const useGc = spec.gc !== false;
   const args = [
     ...spec.pi.args,
     ...buildPiArgs({
       extensions: spec.extensions,
+      harnessExtensions: useGc ? spec.harnessExtensions : undefined,
       sessionFile: spec.sessionFile,
       extraArgs: spec.extraArgs,
     }),
   ];
+  // --expose-gc through NODE_OPTIONS reaches the node runtime whichever way pi
+  // is launched: a global shell-script launcher, a node_modules/.bin shim, or
+  // a plain "node cli.js" --pi value. gc() only ever runs inside the pi pid;
+  // children are measured as before.
+  const env = useGc
+    ? {
+        ...spec.env,
+        NODE_OPTIONS: [spec.env?.NODE_OPTIONS, "--expose-gc"]
+          .filter(Boolean)
+          .join(" "),
+      }
+    : spec.env;
   const child = spawn(spec.pi.command, args, {
     cwd: spec.cwd,
-    env: spec.env,
+    env,
     stdio: ["pipe", "pipe", "pipe"],
     detached: true,
   });
@@ -251,6 +268,11 @@ export async function measureRun(spec) {
       stderrTail,
       exitT,
       windowEndSec: samples[samples.length - 1].t,
+      gcReady: !useGc
+        ? null
+        : spec.harnessExtensions?.length
+          ? /pmb-gc: ready/.test(stderrTail)
+          : null,
     };
   } finally {
     clearInterval(pinger);

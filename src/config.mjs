@@ -22,6 +22,7 @@ import { resolveBudgets } from "./budget.mjs";
  * @property {string[]} [cases]
  * @property {number} [seed]
  * @property {string[]} [piArgs]
+ * @property {boolean} [gc] GC normalization (default true)
  */
 
 const KNOWN = new Set([
@@ -40,6 +41,7 @@ const KNOWN = new Set([
   "cases",
   "seed",
   "piArgs",
+  "gc",
   "$schema",
 ]);
 
@@ -64,6 +66,8 @@ export function loadConfigFile(file) {
         `${file}: unknown key "${k}" (known: ${[...KNOWN].join(", ")})`,
       );
   }
+  if (raw.gc !== undefined && typeof raw.gc !== "boolean")
+    throw new UsageError(`${file}: "gc" must be a boolean`);
   return raw;
 }
 
@@ -83,6 +87,7 @@ export function loadConfigFile(file) {
  * @property {number} seed
  * @property {string | undefined} pi
  * @property {string[]} piArgs
+ * @property {boolean} gc
  * @property {string} fixturesDir
  * @property {import("./budget.mjs").Budgets} budgets
  * @property {Record<string, string>} waivers
@@ -161,6 +166,7 @@ export function resolveOptions(cli, tmpdir) {
     seed: cli.seed ?? cfg.seed ?? 1,
     pi: cli.pi,
     piArgs: [...(cfg.piArgs ?? []), ...cli.piArgs],
+    gc: cli.noGc ? false : cfg.gc !== false,
     fixturesDir: cli.fixturesDir
       ? path.resolve(cli.fixturesDir)
       : path.join(tmpdir, "pi-memory-budget"),

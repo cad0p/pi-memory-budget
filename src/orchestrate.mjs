@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { evaluate } from "./budget.mjs";
 import { ensureFixture } from "./fixture.mjs";
-import { piVersion, resolvePi } from "./pi.mjs";
+import { GC_HARNESS, piVersion, resolvePi } from "./pi.mjs";
 import { measureRun } from "./runner.mjs";
 
 /**
@@ -64,6 +64,12 @@ export async function runBudget(o, hooks = {}) {
     }
   }
 
+  // The GC harness is a normal -e extension loaded in every configuration
+  // alike, so its footprint cancels out of every delta.
+  const harness = o.gc ? [GC_HARNESS] : [];
+  if (o.gc)
+    log("gc normalization: --expose-gc + harness extension in every pi run");
+
   /** @type {Record<string, string[]>} */
   const configs = { vanilla: [], candidate: o.extensions };
   if (o.baselineExtensions.length) configs.baseline = o.baselineExtensions;
@@ -103,6 +109,8 @@ export async function runBudget(o, hooks = {}) {
           const r = await measure({
             pi,
             extensions,
+            harnessExtensions: harness,
+            gc: o.gc,
             sessionFile,
             cwd: o.cwd,
             env,
@@ -116,6 +124,10 @@ export async function runBudget(o, hooks = {}) {
             `  ${r.settled ? `steady ${/** @type {number} */ (r.steadyMb).toFixed(1)} MB (settled at ${/** @type {number} */ (r.settleT).toFixed(0)}s, main ${/** @type {number} */ (r.mainSteadyMb).toFixed(1)} + children ${/** @type {number} */ (r.childrenSteadyMb).toFixed(1)}` : "never settled"}, spike ${r.spikeMb.toFixed(1)} MB, max ping gap ${r.maxGapMs.toFixed(0)} ms`,
           );
           measurements[c][name].push(r);
+          if (o.gc && r.gcReady === false)
+            log(
+              "  warning: GC harness did not report ready (pi without --expose-gc support?); steady may be garbage-timing noise",
+            );
           if (sessionFile) fs.rmSync(sessionFile, { force: true });
         }
       }
@@ -139,6 +151,7 @@ export async function runBudget(o, hooks = {}) {
     sessionMb: o.sessionMb,
     settleMaxSec: o.settleMax,
     seed: o.seed,
+    gc: o.gc,
     cases: o.cases,
     extensions: o.extensions,
     baselineExtensions: o.baselineExtensions,

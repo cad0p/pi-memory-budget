@@ -66,6 +66,12 @@ test("runBudget: matrix order, per-run fixture copies, setup hook env, vanilla/c
         );
       }
       assert.equal(spec.cwd, dir);
+      // the GC harness rides along in every configuration, candidate included
+      assert.equal(spec.gc, true);
+      assert.deepEqual(
+        spec.harnessExtensions?.map((p) => p.split("/").pop()),
+        ["gc-harness.js"],
+      );
       const add = name === "candidate" ? 10 : name === "baseline" ? 6 : 0;
       return { ...fakeRun(() => 150 + add), pings: 1 };
     },
@@ -139,6 +145,38 @@ test("runBudget: a failing setup hook aborts the run", async () => {
     runBudget(o, { measure: async () => fakeRun(() => 1) }),
     /setup command failed \(exit 7\)/,
   );
+});
+
+test("runBudget: --no-gc drops the harness and the flag from every measure spec", async () => {
+  const o = resolveOptions(
+    parseRunArgs([
+      "--extension",
+      "/c.ts",
+      "--cases",
+      "fresh",
+      "--runs",
+      "1",
+      "--window",
+      "2",
+      "--fixtures-dir",
+      path.join(dir, "fx3"),
+      "--cwd",
+      dir,
+      "--pi",
+      process.execPath,
+      "--no-gc",
+    ]),
+    dir,
+  );
+  assert.equal(o.gc, false);
+  const result = await runBudget(o, {
+    measure: async (spec) => {
+      assert.equal(spec.gc, false);
+      assert.deepEqual(spec.harnessExtensions, []);
+      return fakeRun(() => 100);
+    },
+  });
+  assert.equal(result.meta.gc, false);
 });
 
 test("cli main: usage errors exit 2, help exits 0, fixture subcommand writes a file", async () => {
