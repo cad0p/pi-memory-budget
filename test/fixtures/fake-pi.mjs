@@ -26,6 +26,9 @@ if (process.env.FAKE_PI_LOG) {
       kid: kid?.pid ?? null,
       cwd: process.cwd(),
       env: process.env.FAKE_PI_ENV_PROBE ?? null,
+      nodeOptions: process.env.NODE_OPTIONS ?? null,
+      offline: process.env.PI_OFFLINE ?? null,
+      gcExposed: typeof globalThis.gc === "function",
       held: held.length,
     }),
   );

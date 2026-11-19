@@ -3,6 +3,12 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+/** Extension that forces major GCs inside every measured pi (issue #3). */
+export const GC_HARNESS = fileURLToPath(
+  new URL("./gc-harness.js", import.meta.url),
+);
 
 /**
  * Splits a --pi value such as "node /path/cli.js" into command and args.
@@ -55,6 +61,7 @@ export function resolvePi(opts) {
  * @typedef {object} PiRunSpec
  * @property {string[]} extensions absolute extension paths (-e)
  * @property {string | null} sessionFile session file to open, null for --no-session
+ * @property {string[]} [harnessExtensions] loaded in every configuration alike, before the measured ones
  * @property {string[]} [extraArgs]
  */
 
@@ -71,7 +78,8 @@ export function buildPiArgs(spec) {
   // templates, --no-themes, --no-mcp (MCP servers would also show up as child
   // processes), -nc AGENTS.md/CLAUDE.md discovery.
   args.push("-ne", "-ns", "-np", "--no-themes", "--no-mcp", "-nc");
-  for (const e of spec.extensions) args.push("-e", e);
+  for (const e of [...(spec.harnessExtensions ?? []), ...spec.extensions])
+    args.push("-e", e);
   args.push(...(spec.extraArgs ?? []));
   return args;
 }

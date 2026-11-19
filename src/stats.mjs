@@ -38,13 +38,14 @@ export function max(values) {
  * signal (still-loading process, deferred work), so the caller caps it with
  * settleMax.
  * @param {Sample[]} samples
- * @param {{ quietSec?: number, maxRangeMb?: number, settleMax?: number }} [o]
+ * @param {{ quietSec?: number, maxRangeMb?: number, settleMax?: number, settleMin?: number }} [o]
  * @returns {{ settled: boolean, t: number | null, quietSec: number }}
  */
 export function findSettle(samples, o = {}) {
   const quietSec = o.quietSec ?? 10;
   const maxRangeMb = o.maxRangeMb ?? 5;
   const settleMax = o.settleMax ?? Number.POSITIVE_INFINITY;
+  const settleMin = o.settleMin ?? 0; // no settle before this many seconds (late startup work)
   const slack = 0.5;
   // The settled point is the earliest T, at least quietSec after the start,
   // where the last quietSec form a quiet window AND the whole suffix after T
@@ -54,6 +55,7 @@ export function findSettle(samples, o = {}) {
   for (let i = 0; i < samples.length; i++) {
     const T = samples[i].t;
     if (T > settleMax) break;
+    if (T < settleMin) continue;
     if (T - samples[0].t < quietSec - slack) continue; // window not long enough yet
     if (i > 0 && T - samples[i - 1].t > 1) continue; // sampling gap: do not guess
     let lo = Number.POSITIVE_INFINITY;
@@ -92,7 +94,7 @@ export function findSettle(samples, o = {}) {
 
 /**
  * @param {Sample[]} samples
- * @param {{ settleMax?: number, quietSec?: number }} [o]
+ * @param {{ settleMax?: number, quietSec?: number, settleMin?: number }} [o]
  * @returns {RunSummary}
  */
 export function summarize(samples, o = {}) {
@@ -101,6 +103,7 @@ export function summarize(samples, o = {}) {
   const settle = findSettle(samples, {
     quietSec: o.quietSec,
     settleMax: o.settleMax,
+    settleMin: o.settleMin,
   });
   let peak = samples[0];
   for (const s of samples) if (s.rss > peak.rss) peak = s;
