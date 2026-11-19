@@ -34,6 +34,18 @@ test("findSettle: the first 10 s window whose RSS range stays under 5 MB with no
   assert.ok(s.t !== null && s.t >= 12 && s.t <= 13, `settle at ${s.t}`);
 });
 
+test("findSettle: settleMin pushes the settle point past the minimum", () => {
+  /** @type {import("../src/stats.mjs").Sample[]} */
+  const s = [];
+  for (let t = 0; t <= 60; t += 0.2)
+    s.push({ t, rss: 150, main: 150, kids: 0 });
+  const early = findSettle(s, { quietSec: 10 });
+  assert.ok(early.settled && (early.t ?? 99) < 11);
+  const late = findSettle(s, { quietSec: 10, settleMin: 30 });
+  assert.ok(late.settled && (late.t ?? 0) >= 30);
+  assert.equal(findSettle(s, { quietSec: 10, settleMin: 90 }).settled, false);
+});
+
 test("findSettle: never for a permanently climbing process or a window shorter than quietSec", () => {
   const climb = fakeRun((t) => 100 + t * 2, { window: 60 });
   assert.equal(findSettle(climb.samples, { quietSec: 10 }).settled, false);

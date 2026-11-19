@@ -18,17 +18,22 @@ run options:
   --window <s>                 measurement window per run in seconds (default 30)
   --steady-seconds <s>         settled-window length for steady RSS (default 10)
   --settle-max <s>             cap on the quiescence wait; "not settled" past it (default 120)
+  --settle-min <s>             no settle before this time; every run is forced-GC'd by then (default 30)
   --session-mb <n>             size of the long session fixture in MiB (default 200)
   --cases <list>               comma-separated: fresh,long,long2x (default all)
   --seed <n>                   fixture seed (default 1)
   --pi <cmd>                   pi command (default: ./node_modules/.bin/pi of --cwd, then PATH)
   --pi-arg <arg>               extra argument for every pi process (repeatable)
+  --no-gc                      do not start pi with --expose-gc and the GC harness
+                               (default: on — steady is measured after forced GCs)
   --report <file.md>           write the markdown report
   --json <file.json>           write the JSON report
   --fixtures-dir <dir>         fixture cache (default: <tmpdir>/pi-memory-budget)
   --quiet                      no progress output on stderr
 
-Exit code: 0 all budgets pass or are waived, 1 a budget FAILs, 2 usage or runtime error.
+Exit code: 0 all budgets pass or are waived, 1 a budget FAILs, 2 usage or runtime error,
+3 no FAIL but at least one check is INCONCLUSIVE (e.g. vanilla's own run spread
+exceeds the budget, or a release could not be observed).
 `;
 
 /**
@@ -42,6 +47,7 @@ Exit code: 0 all budgets pass or are waived, 1 a budget FAILs, 2 usage or runtim
  * @property {number | undefined} window
  * @property {number | undefined} steadySeconds
  * @property {number | undefined} settleMax
+ * @property {number | undefined} settleMin
  * @property {number | undefined} sessionMb
  * @property {string[] | undefined} cases
  * @property {number | undefined} seed
@@ -50,6 +56,7 @@ Exit code: 0 all budgets pass or are waived, 1 a budget FAILs, 2 usage or runtim
  * @property {string | undefined} report
  * @property {string | undefined} json
  * @property {string | undefined} fixturesDir
+ * @property {boolean} noGc
  * @property {boolean} quiet
  */
 
@@ -97,6 +104,7 @@ export function parseRunArgs(argv) {
         window: { type: "string" },
         "steady-seconds": { type: "string" },
         "settle-max": { type: "string" },
+        "settle-min": { type: "string" },
         "session-mb": { type: "string" },
         cases: { type: "string" },
         seed: { type: "string" },
@@ -105,6 +113,7 @@ export function parseRunArgs(argv) {
         report: { type: "string" },
         json: { type: "string" },
         "fixtures-dir": { type: "string" },
+        "no-gc": { type: "boolean" },
         quiet: { type: "boolean" },
         help: { type: "boolean", short: "h" },
       },
@@ -140,6 +149,7 @@ export function parseRunArgs(argv) {
     window: num(v.window, "window", { min: 1 }),
     steadySeconds: num(v["steady-seconds"], "steady-seconds", { min: 1 }),
     settleMax: num(v["settle-max"], "settle-max", { min: 1 }),
+    settleMin: num(v["settle-min"], "settle-min", { min: 0 }),
     sessionMb: num(v["session-mb"], "session-mb", { min: 1 }),
     cases,
     seed: num(v.seed, "seed", { integer: true }),
@@ -148,6 +158,7 @@ export function parseRunArgs(argv) {
     report: v.report,
     json: v.json,
     fixturesDir: v["fixtures-dir"],
+    noGc: v["no-gc"] ?? false,
     quiet: v.quiet ?? false,
     help: v.help ?? false,
   };

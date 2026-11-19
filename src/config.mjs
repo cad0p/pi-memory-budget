@@ -18,10 +18,12 @@ import { resolveBudgets } from "./budget.mjs";
  * @property {number} [window]
  * @property {number} [steadySeconds]
  * @property {number} [settleMax]
+ * @property {number} [settleMin]
  * @property {number} [sessionMb]
  * @property {string[]} [cases]
  * @property {number} [seed]
  * @property {string[]} [piArgs]
+ * @property {boolean} [gc] GC normalization (default true)
  */
 
 const KNOWN = new Set([
@@ -36,10 +38,12 @@ const KNOWN = new Set([
   "window",
   "steadySeconds",
   "settleMax",
+  "settleMin",
   "sessionMb",
   "cases",
   "seed",
   "piArgs",
+  "gc",
   "$schema",
 ]);
 
@@ -64,6 +68,8 @@ export function loadConfigFile(file) {
         `${file}: unknown key "${k}" (known: ${[...KNOWN].join(", ")})`,
       );
   }
+  if (raw.gc !== undefined && typeof raw.gc !== "boolean")
+    throw new UsageError(`${file}: "gc" must be a boolean`);
   return raw;
 }
 
@@ -78,11 +84,13 @@ export function loadConfigFile(file) {
  * @property {number} window
  * @property {number} steadySeconds
  * @property {number} settleMax
+ * @property {number} settleMin
  * @property {number} sessionMb
  * @property {string[]} cases
  * @property {number} seed
  * @property {string | undefined} pi
  * @property {string[]} piArgs
+ * @property {boolean} gc
  * @property {string} fixturesDir
  * @property {import("./budget.mjs").Budgets} budgets
  * @property {Record<string, string>} waivers
@@ -156,11 +164,13 @@ export function resolveOptions(cli, tmpdir) {
     window: cli.window ?? cfg.window ?? 30,
     steadySeconds: cli.steadySeconds ?? cfg.steadySeconds ?? 10,
     settleMax: cli.settleMax ?? cfg.settleMax ?? 120,
+    settleMin: cli.settleMin ?? cfg.settleMin ?? 30,
     sessionMb: cli.sessionMb ?? cfg.sessionMb ?? 200,
     cases,
     seed: cli.seed ?? cfg.seed ?? 1,
     pi: cli.pi,
     piArgs: [...(cfg.piArgs ?? []), ...cli.piArgs],
+    gc: cli.noGc ? false : cfg.gc !== false,
     fixturesDir: cli.fixturesDir
       ? path.resolve(cli.fixturesDir)
       : path.join(tmpdir, "pi-memory-budget"),

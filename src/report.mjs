@@ -26,6 +26,13 @@ function statusCell(c) {
   return c.status === "FAIL" && c.note ? `FAIL: ${c.note}` : c.status;
 }
 
+/** @param {{ heapUsedMb: number, externalMb: number, arrayBuffersMb: number } | null | undefined} d */
+function gcDiagCell(d) {
+  return d
+    ? `${fmt(d.heapUsedMb)} / ${fmt(d.externalMb)} / ${fmt(d.arrayBuffersMb)}`
+    : "n/a";
+}
+
 /**
  * @typedef {object} ReportInput
  * @property {ReturnType<typeof import("./budget.mjs").evaluate>} result
@@ -49,6 +56,12 @@ export function renderMarkdown(input) {
   out.push(`## Memory budget: ${verdict}`, "");
   out.push(
     `pi ${meta.piVersion}, ${meta.platform}, ${meta.runs} run(s) per configuration (median), ${meta.windowSec}s minimum window, steady = median of the settled ${meta.steadySec}s (total-RSS range < 5 MB, settle capped at ${meta.settleMaxSec}s). Deltas are candidate minus vanilla pi in the same job on TOTAL RSS: the pi pid plus every descendant. Values in MB.`,
+    "",
+  );
+  out.push(
+    meta.gc === false
+      ? "GC normalization is OFF (--no-gc): settled RSS includes whatever garbage was uncollected when the window was sampled."
+      : "GC normalization is ON: every pi run (vanilla and candidate alike) starts with --expose-gc and a harness extension that forces major GCs, so steady measures retained memory, not GC timing. A check is INCONCLUSIVE when the run-to-run spread of the vanilla baseline alone exceeds the check's budget.",
     "",
   );
   for (const c of CASE_ORDER) {
@@ -81,8 +94,8 @@ export function renderMarkdown(input) {
     }
     out.push("");
     out.push(
-      "| Configuration | settle at | steady | spike | released | main steady | children steady | max ping gap |",
-      "|---|---:|---:|---:|---:|---:|---:|---:|",
+      "| Configuration | settle at | steady | steady spread | spike | released | main steady | children steady | max ping gap | post-GC heap/external/arrayBuffers (diagnostic) |",
+      "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     );
     for (const [name, a] of Object.entries(agg)) {
       const settle =
@@ -91,8 +104,14 @@ export function renderMarkdown(input) {
             ? "n/a"
             : "never"
           : `${a.settleT.toFixed(0)} s`;
+      const spread =
+        a.steadySpreadMb === null
+          ? "n/a"
+          : a.steadySpreadMb === 0
+            ? "0.0"
+            : `${fmt(a.steadySpreadMb)} (${fmt(a.steadyMinMb)}-${fmt(a.steadyMaxMb)})`;
       out.push(
-        `| ${name} | ${settle} | ${a.steadyMb === null ? "not settled" : fmt(a.steadyMb)} | ${fmt(a.spikeMb)} | ${fmt(a.releasedMb)} | ${fmt(a.mainSteadyMb)} | ${fmt(a.childrenSteadyMb)} | ${fmt(a.maxGapMs, 0)} ms |`,
+        `| ${name} | ${settle} | ${a.steadyMb === null ? "not settled" : fmt(a.steadyMb)} | ${spread} | ${fmt(a.spikeMb)} | ${fmt(a.releasedMb)} | ${fmt(a.mainSteadyMb)} | ${fmt(a.childrenSteadyMb)} | ${fmt(a.maxGapMs, 0)} ms | ${gcDiagCell(a.gcDiag)} |`,
       );
     }
     out.push("");
@@ -143,6 +162,8 @@ export function renderJson(input) {
         peakT: r.peakT,
         childrenSteadyMb: r.childrenSteadyMb,
         childrenSpikeMb: r.childrenSpikeMb,
+        gcReady: r.gcReady,
+        gcDiag: r.gcDiag,
         maxGapMs: r.maxGapMs,
         readyMs: r.readyMs,
         pings: r.pings,

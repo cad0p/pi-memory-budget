@@ -41,6 +41,32 @@ export function installCleanupHooks() {
   }
 }
 
+/** Env that keeps pi off the network, set for every configuration alike. */
+export const PI_QUIET_ENV = Object.freeze({
+  PI_OFFLINE: "1",
+  PI_SKIP_VERSION_CHECK: "1",
+  PI_TELEMETRY: "0",
+});
+
+/**
+ * Last "pmb-gc: diag {json}" line the harness wrote (post-GC heap numbers).
+ * @param {string} stderr
+ */
+export function parseGcDiag(stderr) {
+  const all = [...stderr.matchAll(/pmb-gc: diag (\{[^\n]*\})/g)];
+  if (!all.length) return null;
+  try {
+    const d = JSON.parse(all[all.length - 1][1]);
+    return {
+      heapUsedMb: d.heapUsed / 1048576,
+      externalMb: d.external / 1048576,
+      arrayBuffersMb: d.arrayBuffers / 1048576,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /** @param {number} ms */
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -54,12 +80,15 @@ const SETTLE_RANGE_MB = 5;
  * @typedef {object} MeasureSpec
  * @property {{ command: string, args: string[] }} pi
  * @property {string[]} extensions
+ * @property {string[]} [harnessExtensions] extensions loaded in every configuration alike (GC harness)
+ * @property {boolean} [gc] start pi with --expose-gc via NODE_OPTIONS and load the GC harness (default true)
  * @property {string | null} sessionFile
  * @property {string} cwd
  * @property {NodeJS.ProcessEnv} env
  * @property {number} windowSec minimum sampling window
  * @property {number} steadySec settled-window length for steady RSS
  * @property {number} [settleMaxSec] cap on the quiescence wait (default 120)
+ * @property {number} [settleMinSec] no settle before this (default 0 here, 30 from the CLI)
  * @property {number} [releaseSec] keep sampling until peak + this (bounded) so a release is observable
  * @property {string[]} [extraArgs]
  * @property {number} [sampleMs]
@@ -75,6 +104,8 @@ const SETTLE_RANGE_MB = 5;
  *   stderrTail: string,
  *   exitT: number | null,
  *   windowEndSec: number,
+ *   gcReady: boolean | null,
+ *   gcDiag: { heapUsedMb: number, externalMb: number, arrayBuffersMb: number } | null,
  * }} RunResult
  */
 
@@ -88,18 +119,37 @@ export async function measureRun(spec) {
   const sampleMs = spec.sampleMs ?? 200;
   const pingMs = spec.pingMs ?? 100;
   const settleMaxSec = spec.settleMaxSec ?? 120;
+  const settleMinSec = spec.settleMinSec ?? 0;
   const releaseSec = spec.releaseSec ?? 0;
+  const useGc = spec.gc !== false;
   const args = [
     ...spec.pi.args,
     ...buildPiArgs({
       extensions: spec.extensions,
+      harnessExtensions: useGc ? spec.harnessExtensions : undefined,
       sessionFile: spec.sessionFile,
       extraArgs: spec.extraArgs,
     }),
   ];
+  // --expose-gc through NODE_OPTIONS reaches the node runtime whichever way pi
+  // is launched: a global shell-script launcher, a node_modules/.bin shim, or
+  // a plain "node cli.js" --pi value. gc() only ever runs inside the pi pid;
+  // children are measured as before.
+  // pi's startup network work (model catalog refresh, version check, telemetry)
+  // allocates ~40 MB at an unpredictable time and made vanilla settle at 120,
+  // 150 or 178 MB. Switched off identically for every config; spec.env wins.
+  const base = { ...PI_QUIET_ENV, ...spec.env };
+  const env = useGc
+    ? {
+        ...base,
+        NODE_OPTIONS: [spec.env?.NODE_OPTIONS, "--expose-gc"]
+          .filter(Boolean)
+          .join(" "),
+      }
+    : base;
   const child = spawn(spec.pi.command, args, {
     cwd: spec.cwd,
-    env: spec.env,
+    env,
     stdio: ["pipe", "pipe", "pipe"],
     detached: true,
   });
@@ -219,7 +269,8 @@ export async function measureRun(spec) {
           quiet = hi - lo < SETTLE_RANGE_MB;
         }
       }
-      const waitForSettle = !quiet && lastT < settleMaxSec;
+      const waitForSettle =
+        (!quiet || lastT < settleMinSec) && lastT < settleMaxSec;
       // (b) Release not yet observable AND RSS still at the peak: keep sampling
       // so the check never has to fail on an unobserved release.
       let waitForRelease = false;
@@ -243,6 +294,7 @@ export async function measureRun(spec) {
       ...summarize(samples, {
         settleMax: settleMaxSec,
         quietSec: spec.steadySec,
+        settleMin: settleMinSec,
       }),
       samples,
       maxGapMs: maxGap,
@@ -251,6 +303,12 @@ export async function measureRun(spec) {
       stderrTail,
       exitT,
       windowEndSec: samples[samples.length - 1].t,
+      gcDiag: parseGcDiag(stderrTail),
+      gcReady: !useGc
+        ? null
+        : spec.harnessExtensions?.length
+          ? /pmb-gc: ready/.test(stderrTail)
+          : null,
     };
   } finally {
     clearInterval(pinger);
