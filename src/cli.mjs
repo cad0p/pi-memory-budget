@@ -70,7 +70,10 @@ export async function main(argv) {
         );
       }
       process.stdout.write(md);
-      return result.ok ? 0 : 1;
+      // 1 a budget FAILs; 3 no FAIL but an INCONCLUSIVE check (noisy baseline,
+      // unobserved release): a distinct non-zero so CI can tell them apart.
+      if (result.checks.some((c) => c.status === "FAIL")) return 1;
+      return result.ok ? 0 : 3;
     }
     throw new UsageError(`unknown command "${cmd}"\n\n${USAGE}`);
   } catch (e) {

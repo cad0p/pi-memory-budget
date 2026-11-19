@@ -30,7 +30,9 @@ run options:
   --fixtures-dir <dir>         fixture cache (default: <tmpdir>/pi-memory-budget)
   --quiet                      no progress output on stderr
 
-Exit code: 0 all budgets pass or are waived, 1 a budget FAILs, 2 usage or runtime error.
+Exit code: 0 all budgets pass or are waived, 1 a budget FAILs, 2 usage or runtime error,
+3 no FAIL but at least one check is INCONCLUSIVE (e.g. vanilla's own run spread
+exceeds the budget, or a release could not be observed).
 `;
 
 /**

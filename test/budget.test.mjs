@@ -268,6 +268,127 @@ test("waiver without a reason, unknown budget keys and bad values are refused", 
   );
 });
 
+test("aggregate reports the run-to-run steady spread (min, max, max-min)", () => {
+  const a = aggregate([flat(150), flat(163), flat(157)]);
+  assert.equal(a.steadyMinMb, 150);
+  assert.equal(a.steadyMaxMb, 163);
+  assert.equal(a.steadySpreadMb, 13);
+  assert.equal(
+    aggregate([flat(150)]).steadySpreadMb,
+    null,
+    "one run: no spread",
+  );
+  const drifting = aggregate([fakeRun((t) => 150 + t)]);
+  assert.equal(drifting.steadySpreadMb, null, "never settled: no spread");
+});
+
+test("vanilla run-to-run spread over the budget makes the check INCONCLUSIVE", () => {
+  // vanilla settles at 150 in one run, 171 in the other: spread 21 > 20.
+  // The measured delta (10) would PASS, but the baseline is too noisy to say.
+  const m = {
+    fresh: {
+      vanilla: [flat(150), flat(171)],
+      candidate: [flat(160), flat(181)],
+    },
+  };
+  const r = evaluate(m, opts);
+  const c = get(r.checks, "steadyFresh");
+  assert.equal(c.status, "INCONCLUSIVE");
+  assert.equal(c.value, 10, "the measured delta is still reported");
+  assert.match(c.note ?? "", /spread across 2 runs is 21\.0 MB/);
+  assert.equal(r.ok, false);
+  // one settled run only: no spread can be observed, the check stands
+  const one = evaluate(
+    { fresh: { vanilla: [flat(150)], candidate: [flat(160)] } },
+    opts,
+  );
+  assert.equal(get(one.checks, "steadyFresh").status, "PASS");
+  // spread under the budget: the check stands
+  const tight = evaluate(
+    {
+      fresh: {
+        vanilla: [flat(150), flat(155)],
+        candidate: [flat(160), flat(165)],
+      },
+    },
+    opts,
+  );
+  assert.equal(get(tight.checks, "steadyFresh").status, "PASS");
+});
+
+test("spread inconclusive covers spike, release and growth too, each against its own budget", () => {
+  // vanilla fresh spread 120 > spike budget 100: even a passing spike is inconclusive
+  const m = {
+    fresh: {
+      vanilla: [flat(150), flat(270)],
+      candidate: [flat(300), flat(300)],
+    },
+  };
+  const checks = evaluate(m, opts).checks;
+  assert.equal(get(checks, "spike:fresh").status, "INCONCLUSIVE");
+  assert.equal(get(checks, "release:fresh").status, "INCONCLUSIVE");
+
+  // growth: vanilla long spread 8 > growth2x budget 5
+  const g = evaluate(
+    {
+      long: {
+        vanilla: [flat(250), flat(258)],
+        candidate: [flat(255), flat(263)],
+      },
+      long2x: {
+        vanilla: [flat(350), flat(351)],
+        candidate: [flat(356), flat(357)],
+      },
+    },
+    opts,
+  ).checks;
+  const growth = get(g, "growth2x");
+  assert.equal(growth.status, "INCONCLUSIVE");
+  assert.match(growth.note ?? "", /vanilla \(long\) steady RSS spread/);
+});
+
+test("a never-settled candidate still FAILs even on a noisy vanilla", () => {
+  const m = {
+    fresh: {
+      vanilla: [flat(150), flat(200)],
+      candidate: [fakeRun((t) => 200 + t)],
+    },
+  };
+  const c = get(evaluate(m, opts).checks, "steadyFresh");
+  assert.equal(c.status, "FAIL");
+  assert.match(c.note ?? "", /candidate never settled/);
+});
+
+test("a settled candidate on a never-settled vanilla is INCONCLUSIVE, not a silent FAIL", () => {
+  const m = {
+    fresh: {
+      vanilla: [fakeRun((t) => 150 + t)],
+      candidate: [flat(160)],
+    },
+  };
+  const c = get(evaluate(m, opts).checks, "steadyFresh");
+  assert.equal(c.status, "INCONCLUSIVE");
+  assert.match(c.note ?? "", /vanilla never settled/);
+});
+
+test("regression is INCONCLUSIVE when the baseline extension itself is too noisy", () => {
+  const c = get(
+    evaluate(
+      {
+        fresh: {
+          vanilla: [flat(150)],
+          candidate: [flat(160)],
+          baseline: [flat(152), flat(160)], // spread 8 > regression budget 5
+        },
+      },
+      opts,
+    ).checks,
+    "regression:fresh",
+  );
+  assert.equal(c.status, "INCONCLUSIVE");
+  assert.match(c.note ?? "", /baseline steady RSS spread/);
+});
+
 test("growth is reported as SKIP (not silently absent) when only one long case ran", () => {
   const m = mk(5, 5, 5);
   const r = evaluate({ fresh: m.fresh, long: m.long }, opts);

@@ -71,6 +71,9 @@ export function resolveBudgets(budgets, waivers) {
  * @typedef {object} Agg median over the runs of one configuration
  * @property {number} runs
  * @property {number | null} steadyMb median of per-run steady total RSS (null when no run settled)
+ * @property {number | null} steadyMinMb lowest per-run steady (null when no run settled)
+ * @property {number | null} steadyMaxMb highest per-run steady
+ * @property {number | null} steadySpreadMb max-min of per-run steady; null with fewer than 2 settled runs
  * @property {number} spikeMb
  * @property {number | null} releasedMb
  * @property {number | null} mainSteadyMb
@@ -94,9 +97,18 @@ export function aggregate(runs) {
     );
     return ok.length ? median(ok) : null;
   };
+  const steady = /** @type {number[]} */ (
+    runs.map((r) => r.steadyMb).filter((x) => x !== null && !Number.isNaN(x))
+  );
+  const steadyMinMb = steady.length ? Math.min(...steady) : null;
+  const steadyMaxMb = steady.length ? Math.max(...steady) : null;
   return {
     runs: runs.length,
     settled,
+    steadyMinMb,
+    steadyMaxMb,
+    steadySpreadMb:
+      steady.length >= 2 ? Math.max(...steady) - Math.min(...steady) : null,
     settleT: settled
       ? median(runs.map((r) => /** @type {number} */ (r.settleT)))
       : null,
@@ -191,6 +203,21 @@ export function evaluate(m, opts) {
     checks.push(check);
   };
 
+  /**
+   * When the reference configuration's own run-to-run steady spread exceeds
+   * the check's limit, the baseline is noisier than what the check can
+   * distinguish: the verdict is INCONCLUSIVE, never PASS nor FAIL.
+   * @param {Agg} ref
+   * @param {number} limitMb
+   * @param {string} name
+   * @returns {string | null}
+   */
+  const spreadNote = (ref, limitMb, name) => {
+    const s = ref.steadySpreadMb;
+    if (s === null || s <= limitMb) return null;
+    return `${name} steady RSS spread across ${ref.runs} runs is ${s.toFixed(1)} MB (max-min), over the ${limitMb} MB budget of this check: too noisy for a verdict; rerun on a quieter machine or with more runs`;
+  };
+
   const cases = CASE_ORDER.filter((c) => m[c]);
   for (const c of cases) {
     const agg = aggregates[c];
@@ -205,6 +232,14 @@ export function evaluate(m, opts) {
         : cand.steadyMb - van.steadyMb;
     if (c === "fresh" || c === "long") {
       // A run that never settles is not a passing number: FAIL with the reason.
+      // A settled candidate needs a settled, quiet vanilla to be judged: no
+      // baseline or a baseline noisier than the budget is INCONCLUSIVE.
+      const noise = spreadNote(van, budgets[steadyKey], "vanilla");
+      const note = !cand.settled
+        ? "candidate never settled (no 10 s window with total-RSS range < 5 MB within the settle cap)"
+        : !van.settled
+          ? "vanilla never settled: no steady baseline"
+          : (noise ?? undefined);
       push(
         {
           id: steadyKey,
@@ -214,12 +249,18 @@ export function evaluate(m, opts) {
           value: d,
           limit: budgets[steadyKey],
           unit: "MB",
-          note: cand.settled
-            ? undefined
-            : "candidate never settled (no 10 s window with total-RSS range < 5 MB within the settle cap)",
-          detail: { vanilla: van.steadyMb, candidate: cand.steadyMb },
+          note,
+          detail: {
+            vanilla: van.steadyMb,
+            candidate: cand.steadyMb,
+            vanillaSpread: van.steadySpreadMb,
+          },
         },
-        cand.settled ? d !== null && d <= budgets[steadyKey] : false,
+        !cand.settled
+          ? false
+          : !van.settled || noise !== null
+            ? "inconclusive"
+            : d !== null && d <= budgets[steadyKey],
       );
     }
 
@@ -235,6 +276,27 @@ export function evaluate(m, opts) {
           unit: "MB",
           note: "vanilla never settled: no reference",
           detail: {},
+        },
+        "inconclusive",
+      );
+    } else if (spreadNote(van, budgets.spike, "vanilla")) {
+      push(
+        {
+          id: `spike:${c}`,
+          key: "spike",
+          case: c,
+          label: `transient spike over vanilla steady, ${c}`,
+          value: cand.spikeMb - van.steadyMb,
+          limit: budgets.spike,
+          unit: "MB",
+          note: /** @type {string} */ (
+            spreadNote(van, budgets.spike, "vanilla")
+          ),
+          detail: {
+            vanilla: van.steadyMb,
+            candidate: cand.spikeMb,
+            vanillaSpread: van.steadySpreadMb,
+          },
         },
         "inconclusive",
       );
@@ -285,6 +347,7 @@ export function evaluate(m, opts) {
         settles && Number.isFinite(steadyDelta)
           ? steadyDelta + RELEASE_NOISE_MB
           : budgets[steadyKey];
+      const noise = spreadNote(van, threshold, "vanilla");
       const perRun = (m[c].candidate ?? []).map((r) =>
         releaseSeconds(r.samples, van.steadyMb ?? 0, threshold, RELEASE_HOLD),
       );
@@ -297,7 +360,26 @@ export function evaluate(m, opts) {
       const observable = (m[c].candidate ?? []).every(
         (r) => r.windowEndSec >= r.peakT + budgets.spikeReleaseSeconds,
       );
-      if (never && !observable) {
+      if (noise !== null) {
+        push(
+          {
+            id: `release:${c}`,
+            key: "spikeReleaseSeconds",
+            case: c,
+            label: `back under the ${steadyKey} budget after the spike, ${c}`,
+            value: never ? null : runs,
+            limit: budgets.spikeReleaseSeconds,
+            unit: "s",
+            note: noise,
+            detail: {
+              peakT,
+              thresholdMb: threshold,
+              vanillaSpread: van.steadySpreadMb,
+            },
+          },
+          "inconclusive",
+        );
+      } else if (never && !observable) {
         push(
           {
             id: `release:${c}`,
@@ -351,6 +433,7 @@ export function evaluate(m, opts) {
         cand.steadyMb === null || agg.baseline.steadyMb === null
           ? null
           : cand.steadyMb - agg.baseline.steadyMb;
+      const noise = spreadNote(agg.baseline, budgets.regression, "baseline");
       push(
         {
           id: `regression:${c}`,
@@ -360,10 +443,22 @@ export function evaluate(m, opts) {
           value: d,
           limit: budgets.regression,
           unit: "MB",
-          note: cand.settled ? undefined : "candidate never settled",
-          detail: { baseline: agg.baseline.steadyMb, candidate: cand.steadyMb },
+          note: !cand.settled
+            ? "candidate never settled"
+            : !agg.baseline.settled
+              ? "baseline never settled: no reference"
+              : (noise ?? undefined),
+          detail: {
+            baseline: agg.baseline.steadyMb,
+            candidate: cand.steadyMb,
+            baselineSpread: agg.baseline.steadySpreadMb,
+          },
         },
-        cand.settled ? d !== null && d <= budgets.regression : false,
+        !cand.settled
+          ? false
+          : !agg.baseline.settled || noise !== null
+            ? "inconclusive"
+            : d !== null && d <= budgets.regression,
       );
     }
   }
@@ -380,6 +475,10 @@ export function evaluate(m, opts) {
       a2.candidate.steadyMb !== null && a2.vanilla.steadyMb !== null
         ? a2.candidate.steadyMb - a2.vanilla.steadyMb
         : null;
+    const vanSettled = a1.vanilla.settled && a2.vanilla.settled;
+    const noise =
+      spreadNote(a1.vanilla, budgets.growth2x, "vanilla (long)") ??
+      spreadNote(a2.vanilla, budgets.growth2x, "vanilla (long2x)");
     push(
       {
         id: "growth2x",
@@ -389,12 +488,23 @@ export function evaluate(m, opts) {
         value: d1 !== null && d2 !== null ? d2 - d1 : null,
         limit: budgets.growth2x,
         unit: "MB",
-        note: settled ? undefined : "candidate never settled on a long case",
-        detail: { deltaLong: d1, deltaLong2x: d2 },
+        note: !settled
+          ? "candidate never settled on a long case"
+          : !vanSettled
+            ? "vanilla never settled on a long case: no baseline"
+            : (noise ?? undefined),
+        detail: {
+          deltaLong: d1,
+          deltaLong2x: d2,
+          vanillaSpreadLong: a1.vanilla.steadySpreadMb,
+          vanillaSpreadLong2x: a2.vanilla.steadySpreadMb,
+        },
       },
-      settled
-        ? d1 !== null && d2 !== null && d2 - d1 <= budgets.growth2x
-        : false,
+      !settled
+        ? false
+        : !vanSettled || noise !== null
+          ? "inconclusive"
+          : d1 !== null && d2 !== null && d2 - d1 <= budgets.growth2x,
     );
   } else if (m.long || m.long2x) {
     push(
