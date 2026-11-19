@@ -135,17 +135,30 @@ test(
       "--cases",
       "fresh,long",
       "--runs",
-      "2",
+      "3",
     ]);
     assert.equal(r.status, 0, `${r.stderr}\n${r.md}`);
-    assert.equal(r.json.ok, true);
+    assert.equal(r.json.ok, true, r.md);
     const steady = r.json.checks.find(
       (/** @type {{id: string}} */ c) => c.id === "steadyFresh",
     );
-    assert.equal(steady.status, "PASS");
+    assert.equal(steady.status, "PASS", r.md);
+    // A ~5 MB fixture cannot be pinned by a tight RSS range: steady deltas are
+    // median(candidate) - median(vanilla) and the vanilla baseline itself
+    // drifts by a few MB run to run, so a +5 holder has measured as low as
+    // +0.3 on CI. Assert the budget margin loosely here and prove the fixture
+    // is really held via the post-GC arrayBuffers diagnostic, which is
+    // deterministic (RSS noise does not touch it).
     assert.ok(
-      steady.value > 2 && steady.value < 20,
-      `measured +${steady.value} MB for a ~5 MB extension`,
+      steady.value > -15 && steady.value < 20,
+      `delta ${steady.value} MB out of sanity range\n${r.md}`,
+    );
+    const cand = r.json.aggregates.fresh.candidate.gcDiag;
+    const van = r.json.aggregates.fresh.vanilla.gcDiag;
+    assert.ok(cand && van, `post-GC diagnostics missing\n${r.md}`);
+    assert.ok(
+      cand.arrayBuffersMb - van.arrayBuffersMb > 3,
+      `arrayBuffers delta ${(cand.arrayBuffersMb - van.arrayBuffersMb).toFixed(1)} MB: the ~5 MB fixture buffer is not held\n${r.md}`,
     );
     assert.match(r.md, /Memory budget: PASS/);
   },
@@ -170,7 +183,7 @@ test(
     assert.equal(steady.status, "FAIL");
     assert.ok(
       steady.value > 40,
-      `measured +${steady.value} MB for a ~60 MB extension`,
+      `measured +${steady.value} MB for a ~60 MB extension\n${r.md}`,
     );
     assert.match(r.md, /Memory budget: FAIL/);
   },
@@ -225,7 +238,7 @@ test(
       (/** @type {{id: string}} */ c) => c.id === "growth2x",
     );
     assert.equal(growth.status, "FAIL");
-    assert.ok(growth.value > 5, `growth +${growth.value} MB`);
+    assert.ok(growth.value > 5, `growth +${growth.value} MB\n${r.md}`);
   },
 );
 
@@ -248,7 +261,7 @@ test(
     assert.equal(steady.status, "FAIL");
     assert.ok(
       steady.value > 40,
-      `total +${steady.value} MB including the child`,
+      `total +${steady.value} MB including the child\n${r.md}`,
     );
     assert.ok(
       r.json.aggregates.fresh.candidate.childrenSteadyMb > 45,
