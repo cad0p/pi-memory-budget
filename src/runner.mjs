@@ -46,6 +46,15 @@ export const PI_QUIET_ENV = Object.freeze({
   PI_OFFLINE: "1",
   PI_SKIP_VERSION_CHECK: "1",
   PI_TELEMETRY: "0",
+  // glibc mallopt (Linux only, ignored elsewhere): pin the mmap threshold at
+  // 64 KiB. The default is a dynamic threshold that climbs toward 32 MB, so
+  // the large transient buffers of a 100-200 MB session load end up served
+  // from malloc arenas and stay resident after free() — that retention was
+  // most of the run-to-run long-case steady spread (issue #7: 5-52 MB).
+  // Under a pinned 64 KiB threshold those buffers mmap/munmap per call and
+  // are returned to the kernel promptly. Set identically for every
+  // configuration, so the delta is unaffected; --env overrides it.
+  MALLOC_MMAP_THRESHOLD_: "65536",
 });
 
 /**
@@ -59,6 +68,11 @@ export function parseGcDiag(stderr) {
     const d = JSON.parse(all[all.length - 1][1]);
     return {
       heapUsedMb: d.heapUsed / 1048576,
+      // heapTotal: V8-committed heap pages — retained-but-unused after a
+      // major GC is exactly what this diagnoses (issue #7). Older harness
+      // output may lack it.
+      heapTotalMb:
+        typeof d.heapTotal === "number" ? d.heapTotal / 1048576 : null,
       externalMb: d.external / 1048576,
       arrayBuffersMb: d.arrayBuffers / 1048576,
     };
@@ -105,7 +119,7 @@ const SETTLE_RANGE_MB = 5;
  *   exitT: number | null,
  *   windowEndSec: number,
  *   gcReady: boolean | null,
- *   gcDiag: { heapUsedMb: number, externalMb: number, arrayBuffersMb: number } | null,
+ *   gcDiag: { heapUsedMb: number, heapTotalMb: number | null, externalMb: number, arrayBuffersMb: number } | null,
  * }} RunResult
  */
 
@@ -243,6 +257,9 @@ export async function measureRun(spec) {
           rss: r.rssMb,
           main: r.mainMb ?? 0,
           kids: r.kidsMb,
+          anon: r.anonMb,
+          file: r.fileMb,
+          shmem: r.shmemMb,
         });
       }
       const lastT = (performance.now() - t0) / 1000;

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { evaluate, resolveBudgets } from "../src/budget.mjs";
 import { renderJson, renderMarkdown } from "../src/report.mjs";
-import { flat } from "./helpers.mjs";
+import { fakeRun, flat } from "./helpers.mjs";
 
 const meta = {
   piVersion: "1.5.2",
@@ -79,6 +79,40 @@ test("json carries the verdict, budgets, waivers, checks, aggregates and raw sam
     j.runs.fresh.candidate
   );
   const run = runs[0];
-  assert.deepEqual(run.samples[0], [0, 190, 0]);
+  assert.deepEqual(run.samples[0], [0, 190, 0, null, null, null]);
   JSON.stringify(j); // serializable (no NaN-only structures that would throw)
+});
+
+test("markdown reports the per-run RSS breakdown and spread columns", () => {
+  const { budgets, waivers } = resolveBudgets(undefined, undefined);
+  const measurements = {
+    long: {
+      vanilla: [
+        fakeRun(() => 250, { anon: 240, file: 9, shmem: 1 }),
+        fakeRun(() => 260, { anon: 258, file: 1.5, shmem: 0.5 }),
+      ],
+      candidate: [fakeRun(() => 255, { anon: 250, file: 5 })],
+    },
+  };
+  const result = evaluate(measurements, { budgets, waivers, windowSec: 30 });
+  const md = renderMarkdown({
+    result,
+    budgets,
+    waivers,
+    meta: {
+      piVersion: "1.5.2",
+      platform: "linux-x64",
+      runs: 2,
+      windowSec: 30,
+      steadySec: 10,
+    },
+  });
+  assert.match(md, /steady RssAnon\/RssFile\/RssShmem \(Linux\)/);
+  assert.match(md, /anon\/file\/shmem spread/);
+  assert.match(md, /post-GC heapUsed\/heapTotal\/external\/arrayBuffers/);
+  // vanilla anon 240/258 -> median 249.0, spread 18.0; file 9/1.5 -> 5.3, spread 7.5
+  assert.match(
+    md,
+    /\| vanilla \|.*249\.0 \/ 5\.3 \/ 0\.8 \| 18\.0 \/ 7\.5 \/ 0\.5 \|/,
+  );
 });

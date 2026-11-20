@@ -17,6 +17,31 @@ export function parseVmRss(text) {
 }
 
 /**
+ * RSS breakdown of /proc/<pid>/status: VmRSS = RssAnon + RssFile + RssShmem.
+ * RssAnon is heap, stacks and malloc arenas; RssFile is page-cache-backed
+ * (the session file, shared libraries); RssShmem is SysV/POSIX shared memory
+ * (absent before Linux 4.15). Every field is nullable: a field that is not in
+ * the file stays null so the caller can report "unavailable" instead of a
+ * wrong 0.
+ * @param {string} text contents of /proc/<pid>/status
+ * @returns {{ rssKb: number | null, anonKb: number | null, fileKb: number | null, shmemKb: number | null }}
+ */
+export function parseStatusRss(text) {
+  /** @param {string} name */
+  const field = (name) => {
+    const re = new RegExp(`^${name}:\\s+(\\d+)\\s*kB`, "m");
+    const m = re.exec(text);
+    return m ? Number(m[1]) : null;
+  };
+  return {
+    rssKb: field("VmRSS"),
+    anonKb: field("RssAnon"),
+    fileKb: field("RssFile"),
+    shmemKb: field("RssShmem"),
+  };
+}
+
+/**
  * @param {string} text output of `ps -A -o pid=,ppid=,rss=`
  * @returns {{ pid: number, ppid: number, rssKb: number }[]}
  */
@@ -58,10 +83,10 @@ export function descendantsRssKb(rows, root) {
   return total;
 }
 
-/** @param {number} pid @returns {number | null} VmRSS in KB */
-function procRssKb(pid) {
+/** @param {number} pid @returns {ReturnType<typeof parseStatusRss> | null} */
+function procStatus(pid) {
   try {
-    return parseVmRss(fs.readFileSync(`/proc/${pid}/status`, "utf8"));
+    return parseStatusRss(fs.readFileSync(`/proc/${pid}/status`, "utf8"));
   } catch {
     return null;
   }
@@ -119,19 +144,39 @@ function run(args) {
 
 /**
  * Total RSS of pid plus all descendants, and the split for diagnosis.
+ * On Linux anonMb/fileMb/shmemMb are the same sum per /proc RssAnon/RssFile/
+ * RssShmem (null when the kernel does not report them); on other platforms
+ * they are null.
  * @param {number} pid
  * @param {{ withChildren?: boolean }} [opts]
- * @returns {Promise<{ rssMb: number | null, mainMb: number | null, kidsMb: number }>}
+ * @returns {Promise<{ rssMb: number | null, mainMb: number | null, kidsMb: number, anonMb: number | null, fileMb: number | null, shmemMb: number | null }>}
  *   rssMb null when the process is gone (kidsMb is still the last read: descendants may outlive it)
  */
 export async function readRss(pid, opts = {}) {
   const withChildren = opts.withChildren ?? true;
   if (process.platform === "linux") {
-    const mainKb = procRssKb(pid);
-    let kidsKb = 0;
+    /** @type {(ReturnType<typeof parseStatusRss> | null)[]} */
+    const stats = [procStatus(pid)];
     if (withChildren) {
-      for (const d of linuxDescendants(pid)) kidsKb += procRssKb(d) ?? 0;
+      for (const d of linuxDescendants(pid)) stats.push(procStatus(d));
     }
+    const mainKb = stats[0]?.rssKb ?? null;
+    let kidsKb = 0;
+    for (let i = 1; i < stats.length; i++) kidsKb += stats[i]?.rssKb ?? 0;
+    /** Sum of one /proc field over main + descendants; null when nobody
+     * reports it.
+     * @param {"anonKb" | "fileKb" | "shmemKb"} k */
+    const sumField = (k) => {
+      let t = 0;
+      let any = false;
+      for (const s of stats) {
+        if (s && s[k] !== null) {
+          t += /** @type {number} */ (s[k]);
+          any = true;
+        }
+      }
+      return any ? t / KB_PER_MB : null;
+    };
     return {
       rssMb:
         mainKb === null
@@ -141,9 +186,13 @@ export async function readRss(pid, opts = {}) {
           : (mainKb + kidsKb) / KB_PER_MB,
       mainMb: mainKb === null ? null : mainKb / KB_PER_MB,
       kidsMb: kidsKb / KB_PER_MB,
+      anonMb: sumField("anonKb"),
+      fileMb: sumField("fileKb"),
+      shmemMb: sumField("shmemKb"),
     };
   }
   // macOS / other unix: one ps call for the whole table (main row included).
+  // No anon/file breakdown there: report nulls.
   const table = parsePsTable(await run(["-A", "-o", "pid=,ppid=,rss="]));
   const self = table.find((r) => r.pid === pid);
   const kidsKb = withChildren ? descendantsRssKb(table, pid) : 0;
@@ -152,11 +201,17 @@ export async function readRss(pid, opts = {}) {
       rssMb: kidsKb > 0 ? kidsKb / KB_PER_MB : null,
       mainMb: null,
       kidsMb: kidsKb / KB_PER_MB,
+      anonMb: null,
+      fileMb: null,
+      shmemMb: null,
     };
   const kids = withChildren ? kidsKb : 0;
   return {
     rssMb: (self.rssKb + kids) / KB_PER_MB,
     mainMb: self.rssKb / KB_PER_MB,
     kidsMb: kids / KB_PER_MB,
+    anonMb: null,
+    fileMb: null,
+    shmemMb: null,
   };
 }

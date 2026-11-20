@@ -247,9 +247,26 @@ test("gc normalization: harness -e in the argv, --expose-gc in NODE_OPTIONS, off
 test("parseGcDiag reads the last harness diag line", () => {
   assert.equal(parseGcDiag("nothing"), null);
   const d = parseGcDiag(
-    'pmb-gc: diag {"heapUsed":1048576,"external":2097152,"arrayBuffers":0}\npmb-gc: diag {"heapUsed":3145728,"external":2097152,"arrayBuffers":1048576}\n',
+    'pmb-gc: diag {"heapUsed":1048576,"heapTotal":2097152,"external":2097152,"arrayBuffers":0}\npmb-gc: diag {"heapUsed":3145728,"heapTotal":4194304,"external":2097152,"arrayBuffers":1048576}\n',
   );
-  assert.deepEqual(d, { heapUsedMb: 3, externalMb: 2, arrayBuffersMb: 1 });
+  assert.deepEqual(d, {
+    heapUsedMb: 3,
+    heapTotalMb: 4,
+    externalMb: 2,
+    arrayBuffersMb: 1,
+  });
+});
+
+test("parseGcDiag tolerates a diag line without heapTotal", () => {
+  const d = parseGcDiag(
+    'pmb-gc: diag {"heapUsed":1048576,"external":2097152,"arrayBuffers":0}\n',
+  );
+  assert.deepEqual(d, {
+    heapUsedMb: 1,
+    heapTotalMb: null,
+    externalMb: 2,
+    arrayBuffersMb: 0,
+  });
 });
 
 test("measureRun fails loudly, and cleans up, when pi exits early", async () => {

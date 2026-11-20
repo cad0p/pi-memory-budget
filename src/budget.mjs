@@ -82,20 +82,58 @@ export function resolveBudgets(budgets, waivers) {
  * @property {boolean} settled whether every run settled
  * @property {number} maxGapMs median of the per-run max ping gap
  * @property {number} worstGapMs worst ping gap over all runs
- * @property {{ heapUsedMb: number, externalMb: number, arrayBuffersMb: number } | null} gcDiag median post-GC heap numbers (diagnostic)
+ * @property {number | null} anonSteadyMb median of per-run steady RssAnon (Linux only)
+ * @property {number | null} anonSteadySpreadMb max-min of per-run steady RssAnon
+ * @property {number | null} fileSteadyMb median of per-run steady RssFile
+ * @property {number | null} fileSteadySpreadMb max-min of per-run steady RssFile
+ * @property {number | null} shmemSteadyMb median of per-run steady RssShmem
+ * @property {number | null} shmemSteadySpreadMb max-min of per-run steady RssShmem
+ * @property {{ heapUsedMb: number, heapTotalMb: number | null, externalMb: number, arrayBuffersMb: number } | null} gcDiag median post-GC heap numbers (diagnostic)
  */
 
 /** @param {RunResult[]} runs */
 function aggDiag(runs) {
   const d = runs.map((r) => r.gcDiag).filter((x) => x);
   if (!d.length) return null;
-  /** @param {"heapUsedMb"|"externalMb"|"arrayBuffersMb"} k */
-  const m = (k) =>
-    median(d.map((x) => /** @type {NonNullable<typeof x>} */ (x)[k]));
+  /** @param {"heapUsedMb"|"heapTotalMb"|"externalMb"|"arrayBuffersMb"} k */
+  const m = (k) => {
+    const v = d
+      .map((x) => /** @type {NonNullable<typeof x>} */ (x)[k])
+      .filter((x) => x !== null);
+    return v.length ? median(v) : null;
+  };
   return {
-    heapUsedMb: m("heapUsedMb"),
-    externalMb: m("externalMb"),
-    arrayBuffersMb: m("arrayBuffersMb"),
+    heapUsedMb: /** @type {number} */ (m("heapUsedMb")),
+    heapTotalMb: m("heapTotalMb"),
+    externalMb: /** @type {number} */ (m("externalMb")),
+    arrayBuffersMb: /** @type {number} */ (m("arrayBuffersMb")),
+  };
+}
+
+/**
+ * Per-run values of a nullable summary field, for a median or a spread.
+ * @param {RunResult[]} runs
+ * @param {"anonSteadyMb"|"fileSteadyMb"|"shmemSteadyMb"} k
+ * @returns {number[]}
+ */
+function fieldValues(runs, k) {
+  return /** @type {number[]} */ (
+    runs.map((r) => r[k]).filter((x) => x !== null && !Number.isNaN(x))
+  );
+}
+
+/**
+ * Median and max-min spread of a per-run breakdown field; both null when the
+ * platform does not report it, spread null with fewer than 2 values.
+ * @param {RunResult[]} runs
+ * @param {"anonSteadyMb"|"fileSteadyMb"|"shmemSteadyMb"} k
+ * @returns {{ med: number | null, spread: number | null }}
+ */
+function fieldStats(runs, k) {
+  const v = fieldValues(runs, k);
+  return {
+    med: v.length ? median(v) : null,
+    spread: v.length >= 2 ? Math.max(...v) - Math.min(...v) : null,
   };
 }
 
@@ -134,6 +172,12 @@ export function aggregate(runs) {
     childrenSteadyMb: med(runs.map((r) => r.childrenSteadyMb)),
     maxGapMs: median(runs.map((r) => r.maxGapMs)),
     worstGapMs: max(runs.map((r) => r.maxGapMs)),
+    anonSteadyMb: fieldStats(runs, "anonSteadyMb").med,
+    anonSteadySpreadMb: fieldStats(runs, "anonSteadyMb").spread,
+    fileSteadyMb: fieldStats(runs, "fileSteadyMb").med,
+    fileSteadySpreadMb: fieldStats(runs, "fileSteadyMb").spread,
+    shmemSteadyMb: fieldStats(runs, "shmemSteadyMb").med,
+    shmemSteadySpreadMb: fieldStats(runs, "shmemSteadyMb").spread,
     gcDiag: aggDiag(runs),
   };
 }
@@ -231,7 +275,20 @@ export function evaluate(m, opts) {
   const spreadNote = (ref, limitMb, name) => {
     const s = ref.steadySpreadMb;
     if (s === null || s <= limitMb) return null;
-    return `${name} steady RSS spread across ${ref.runs} runs is ${s.toFixed(1)} MB (max-min), over the ${limitMb} MB budget of this check: too noisy for a verdict; rerun on a quieter machine or with more runs`;
+    let note = `${name} steady RSS spread across ${ref.runs} runs is ${s.toFixed(1)} MB (max-min), over the ${limitMb} MB budget of this check: too noisy for a verdict; rerun on a quieter machine or with more runs`;
+    // Issue #7: the residual total-RSS spread on long sessions is usually
+    // file-backed pages (page cache of the session file plus shared
+    // libraries) moving with host I/O pressure, not retention. Say so, and
+    // point at the column that is comparable run to run.
+    const anon = ref.anonSteadySpreadMb;
+    if (anon !== null && anon <= limitMb) {
+      const file =
+        ref.fileSteadySpreadMb === null
+          ? ""
+          : ` and RssFile ${ref.fileSteadySpreadMb.toFixed(1)} MB`;
+      note += `; it sits outside the JS heap in file-backed pages (RssAnon spread ${anon.toFixed(1)} MB${file}), so this machine's page cache is moving, not the measured process's retention`;
+    }
+    return note;
   };
 
   const cases = CASE_ORDER.filter((c) => m[c]);

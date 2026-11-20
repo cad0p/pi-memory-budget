@@ -282,6 +282,24 @@ test("aggregate reports the run-to-run steady spread (min, max, max-min)", () =>
   assert.equal(drifting.steadySpreadMb, null, "never settled: no spread");
 });
 
+test("an INCONCLUSIVE note names file-backed pages when the spread is in RssFile", () => {
+  // Total RSS spread 21 MB, but RssAnon is stable and RssFile moves: the
+  // machine's page cache, not the process's retention (issue #7).
+  const m = {
+    long: {
+      vanilla: [
+        fakeRun(() => 210, { anon: 163, file: 47 }),
+        fakeRun(() => 231, { anon: 164, file: 67 }),
+      ],
+      candidate: [fakeRun(() => 220, { anon: 173, file: 47 })],
+    },
+  };
+  const c = get(evaluate(m, opts).checks, "steadyLong");
+  assert.equal(c.status, "INCONCLUSIVE");
+  assert.match(c.note ?? "", /outside the JS heap in file-backed pages/);
+  assert.match(c.note ?? "", /RssAnon spread 1\.0 MB and RssFile 20\.0 MB/);
+});
+
 test("vanilla run-to-run spread over the budget makes the check INCONCLUSIVE", () => {
   // vanilla settles at 150 in one run, 171 in the other: spread 21 > 20.
   // The measured delta (10) would PASS, but the baseline is too noisy to say.
@@ -297,6 +315,8 @@ test("vanilla run-to-run spread over the budget makes the check INCONCLUSIVE", (
   assert.equal(c.value, 10, "the measured delta is still reported");
   assert.match(c.note ?? "", /spread across 2 runs is 21\.0 MB/);
   assert.equal(r.ok, false);
+  // No breakdown in these synthetic runs: nothing to add about page cache.
+  assert.doesNotMatch(c.note ?? "", /file-backed pages/);
   // one settled run only: no spread can be observed, the check stands
   const one = evaluate(
     { fresh: { vanilla: [flat(150)], candidate: [flat(160)] } },

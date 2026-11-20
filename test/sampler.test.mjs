@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   descendantsRssKb,
   parsePsTable,
+  parseStatusRss,
   parseVmRss,
   readRss,
 } from "../src/sampler.mjs";
@@ -61,4 +62,46 @@ test("readRss reports this process and a child process separately", async () => 
 test("readRss returns null for a process that does not exist", async () => {
   const r = await readRss(2 ** 22 - 3);
   assert.equal(r.rssMb, null);
+});
+
+test("parseStatusRss reads VmRSS and the anon/file/shmem breakdown", () => {
+  const status = [
+    "Name:\tnode",
+    "VmRSS:\t  200000 kB",
+    "RssAnon:\t  150000 kB",
+    "RssFile:\t   49000 kB",
+    "RssShmem:\t    1000 kB",
+    "VmHWM:\t  210000 kB",
+  ].join("\n");
+  assert.deepEqual(parseStatusRss(status), {
+    rssKb: 200000,
+    anonKb: 150000,
+    fileKb: 49000,
+    shmemKb: 1000,
+  });
+  // Pre-4.15 kernels have no RssShmem: the field stays null, not 0.
+  const noShmem = parseStatusRss("VmRSS:\t 100 kB\nRssAnon:\t 90 kB\n");
+  assert.deepEqual(noShmem, {
+    rssKb: 100,
+    anonKb: 90,
+    fileKb: null,
+    shmemKb: null,
+  });
+});
+
+test("readRss reports the anon/file breakdown on Linux", async () => {
+  const r = await readRss(process.pid, { withChildren: false });
+  if (process.platform !== "linux") {
+    assert.equal(r.anonMb, null);
+    return;
+  }
+  assert.ok(r.anonMb !== null && r.anonMb > 0, `anon ${r.anonMb}`);
+  assert.ok(r.fileMb !== null && r.fileMb > 0, `file ${r.fileMb}`);
+  // RssAnon + RssFile + RssShmem = VmRSS on Linux.
+  assert.ok(
+    Math.abs(
+      (r.anonMb ?? 0) + (r.fileMb ?? 0) + (r.shmemMb ?? 0) - (r.rssMb ?? 0),
+    ) < 0.5,
+    `breakdown ${r.anonMb}+${r.fileMb}+${r.shmemMb} vs ${r.rssMb}`,
+  );
 });

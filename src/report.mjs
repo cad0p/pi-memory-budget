@@ -26,11 +26,19 @@ function statusCell(c) {
   return c.status === "FAIL" && c.note ? `FAIL: ${c.note}` : c.status;
 }
 
-/** @param {{ heapUsedMb: number, externalMb: number, arrayBuffersMb: number } | null | undefined} d */
+/** @param {{ heapUsedMb: number, heapTotalMb: number | null, externalMb: number, arrayBuffersMb: number } | null | undefined} d */
 function gcDiagCell(d) {
   return d
-    ? `${fmt(d.heapUsedMb)} / ${fmt(d.externalMb)} / ${fmt(d.arrayBuffersMb)}`
+    ? `${fmt(d.heapUsedMb)} / ${fmt(d.heapTotalMb)} / ${fmt(d.externalMb)} / ${fmt(d.arrayBuffersMb)}`
     : "n/a";
+}
+
+/** Three nullable values as "a / b / c".
+ * @param {(number | null | undefined)[]} v */
+function tripleCell(v) {
+  return v.every((x) => x === null || x === undefined || Number.isNaN(x))
+    ? "n/a"
+    : v.map((x) => fmt(x)).join(" / ");
 }
 
 /**
@@ -94,8 +102,8 @@ export function renderMarkdown(input) {
     }
     out.push("");
     out.push(
-      "| Configuration | settle at | steady | steady spread | spike | released | main steady | children steady | max ping gap | post-GC heap/external/arrayBuffers (diagnostic) |",
-      "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+      "| Configuration | settle at | steady | steady spread | spike | released | main steady | children steady | max ping gap | steady RssAnon/RssFile/RssShmem (Linux) | anon/file/shmem spread | post-GC heapUsed/heapTotal/external/arrayBuffers (diagnostic) |",
+      "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     );
     for (const [name, a] of Object.entries(agg)) {
       const settle =
@@ -111,7 +119,7 @@ export function renderMarkdown(input) {
             ? "0.0"
             : `${fmt(a.steadySpreadMb)} (${fmt(a.steadyMinMb)}-${fmt(a.steadyMaxMb)})`;
       out.push(
-        `| ${name} | ${settle} | ${a.steadyMb === null ? "not settled" : fmt(a.steadyMb)} | ${spread} | ${fmt(a.spikeMb)} | ${fmt(a.releasedMb)} | ${fmt(a.mainSteadyMb)} | ${fmt(a.childrenSteadyMb)} | ${fmt(a.maxGapMs, 0)} ms | ${gcDiagCell(a.gcDiag)} |`,
+        `| ${name} | ${settle} | ${a.steadyMb === null ? "not settled" : fmt(a.steadyMb)} | ${spread} | ${fmt(a.spikeMb)} | ${fmt(a.releasedMb)} | ${fmt(a.mainSteadyMb)} | ${fmt(a.childrenSteadyMb)} | ${fmt(a.maxGapMs, 0)} ms | ${tripleCell([a.anonSteadyMb, a.fileSteadyMb, a.shmemSteadyMb])} | ${tripleCell([a.anonSteadySpreadMb, a.fileSteadySpreadMb, a.shmemSteadySpreadMb])} | ${gcDiagCell(a.gcDiag)} |`,
       );
     }
     out.push("");
@@ -162,6 +170,9 @@ export function renderJson(input) {
         peakT: r.peakT,
         childrenSteadyMb: r.childrenSteadyMb,
         childrenSpikeMb: r.childrenSpikeMb,
+        anonSteadyMb: r.anonSteadyMb,
+        fileSteadyMb: r.fileSteadyMb,
+        shmemSteadyMb: r.shmemSteadyMb,
         gcReady: r.gcReady,
         gcDiag: r.gcDiag,
         maxGapMs: r.maxGapMs,
@@ -171,6 +182,15 @@ export function renderJson(input) {
           Number(s.t.toFixed(2)),
           Number(s.rss.toFixed(1)),
           Number(s.kids.toFixed(1)),
+          s.anon === null || s.anon === undefined
+            ? null
+            : Number(s.anon.toFixed(1)),
+          s.file === null || s.file === undefined
+            ? null
+            : Number(s.file.toFixed(1)),
+          s.shmem === null || s.shmem === undefined
+            ? null
+            : Number(s.shmem.toFixed(1)),
         ]),
       }));
     }

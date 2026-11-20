@@ -121,8 +121,12 @@ export async function runBudget(o, hooks = {}) {
             releaseSec: o.budgets.spikeReleaseSeconds,
             extraArgs: o.piArgs,
           });
+          const anon =
+            r.anonSteadyMb === null || r.anonSteadyMb === undefined
+              ? ""
+              : `, anon ${r.anonSteadyMb.toFixed(1)} + file ${(r.fileSteadyMb ?? 0).toFixed(1)} + shmem ${(r.shmemSteadyMb ?? 0).toFixed(1)}`;
           log(
-            `  ${r.settled ? `steady ${/** @type {number} */ (r.steadyMb).toFixed(1)} MB (settled at ${/** @type {number} */ (r.settleT).toFixed(0)}s, main ${/** @type {number} */ (r.mainSteadyMb).toFixed(1)} + children ${/** @type {number} */ (r.childrenSteadyMb).toFixed(1)}` : "never settled"}, spike ${r.spikeMb.toFixed(1)} MB, max ping gap ${r.maxGapMs.toFixed(0)} ms`,
+            `  ${r.settled ? `steady ${/** @type {number} */ (r.steadyMb).toFixed(1)} MB (settled at ${/** @type {number} */ (r.settleT).toFixed(0)}s, main ${/** @type {number} */ (r.mainSteadyMb).toFixed(1)} + children ${/** @type {number} */ (r.childrenSteadyMb).toFixed(1)}${anon})` : "never settled"}, spike ${r.spikeMb.toFixed(1)} MB, max ping gap ${r.maxGapMs.toFixed(0)} ms`,
           );
           measurements[c][name].push(r);
           if (o.gc && r.gcReady === false)
