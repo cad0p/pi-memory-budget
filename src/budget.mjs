@@ -82,20 +82,58 @@ export function resolveBudgets(budgets, waivers) {
  * @property {boolean} settled whether every run settled
  * @property {number} maxGapMs median of the per-run max ping gap
  * @property {number} worstGapMs worst ping gap over all runs
- * @property {{ heapUsedMb: number, externalMb: number, arrayBuffersMb: number } | null} gcDiag median post-GC heap numbers (diagnostic)
+ * @property {number | null} anonSteadyMb median of per-run steady RssAnon (Linux only)
+ * @property {number | null} anonSteadySpreadMb max-min of per-run steady RssAnon
+ * @property {number | null} fileSteadyMb median of per-run steady RssFile
+ * @property {number | null} fileSteadySpreadMb max-min of per-run steady RssFile
+ * @property {number | null} shmemSteadyMb median of per-run steady RssShmem
+ * @property {number | null} shmemSteadySpreadMb max-min of per-run steady RssShmem
+ * @property {{ heapUsedMb: number, heapTotalMb: number | null, externalMb: number, arrayBuffersMb: number } | null} gcDiag median post-GC heap numbers (diagnostic)
  */
 
 /** @param {RunResult[]} runs */
 function aggDiag(runs) {
   const d = runs.map((r) => r.gcDiag).filter((x) => x);
   if (!d.length) return null;
-  /** @param {"heapUsedMb"|"externalMb"|"arrayBuffersMb"} k */
-  const m = (k) =>
-    median(d.map((x) => /** @type {NonNullable<typeof x>} */ (x)[k]));
+  /** @param {"heapUsedMb"|"heapTotalMb"|"externalMb"|"arrayBuffersMb"} k */
+  const m = (k) => {
+    const v = d
+      .map((x) => /** @type {NonNullable<typeof x>} */ (x)[k])
+      .filter((x) => x !== null);
+    return v.length ? median(v) : null;
+  };
   return {
-    heapUsedMb: m("heapUsedMb"),
-    externalMb: m("externalMb"),
-    arrayBuffersMb: m("arrayBuffersMb"),
+    heapUsedMb: /** @type {number} */ (m("heapUsedMb")),
+    heapTotalMb: m("heapTotalMb"),
+    externalMb: /** @type {number} */ (m("externalMb")),
+    arrayBuffersMb: /** @type {number} */ (m("arrayBuffersMb")),
+  };
+}
+
+/**
+ * Per-run values of a nullable summary field, for a median or a spread.
+ * @param {RunResult[]} runs
+ * @param {"anonSteadyMb"|"fileSteadyMb"|"shmemSteadyMb"} k
+ * @returns {number[]}
+ */
+function fieldValues(runs, k) {
+  return /** @type {number[]} */ (
+    runs.map((r) => r[k]).filter((x) => x !== null && !Number.isNaN(x))
+  );
+}
+
+/**
+ * Median and max-min spread of a per-run breakdown field; both null when the
+ * platform does not report it, spread null with fewer than 2 values.
+ * @param {RunResult[]} runs
+ * @param {"anonSteadyMb"|"fileSteadyMb"|"shmemSteadyMb"} k
+ * @returns {{ med: number | null, spread: number | null }}
+ */
+function fieldStats(runs, k) {
+  const v = fieldValues(runs, k);
+  return {
+    med: v.length ? median(v) : null,
+    spread: v.length >= 2 ? Math.max(...v) - Math.min(...v) : null,
   };
 }
 
@@ -134,6 +172,12 @@ export function aggregate(runs) {
     childrenSteadyMb: med(runs.map((r) => r.childrenSteadyMb)),
     maxGapMs: median(runs.map((r) => r.maxGapMs)),
     worstGapMs: max(runs.map((r) => r.maxGapMs)),
+    anonSteadyMb: fieldStats(runs, "anonSteadyMb").med,
+    anonSteadySpreadMb: fieldStats(runs, "anonSteadyMb").spread,
+    fileSteadyMb: fieldStats(runs, "fileSteadyMb").med,
+    fileSteadySpreadMb: fieldStats(runs, "fileSteadyMb").spread,
+    shmemSteadyMb: fieldStats(runs, "shmemSteadyMb").med,
+    shmemSteadySpreadMb: fieldStats(runs, "shmemSteadyMb").spread,
     gcDiag: aggDiag(runs),
   };
 }

@@ -4,7 +4,7 @@ import { summarize } from "../src/stats.mjs";
 /**
  * A run whose TOTAL RSS follows fn(t) for a window of `window` seconds at 5 Hz.
  * @param {(t: number) => number} fn
- * @param {{ window?: number, kids?: number, gap?: number, steadySec?: number, exitT?: number | null }} [o]
+ * @param {{ window?: number, kids?: number, gap?: number, steadySec?: number, exitT?: number | null, anon?: number | null, file?: number | null, shmem?: number | null }} [o]
  * @returns {import("../src/runner.mjs").RunResult}
  */
 export function fakeRun(fn, o = {}) {
@@ -13,7 +13,15 @@ export function fakeRun(fn, o = {}) {
   const samples = [];
   for (let t = 0; t <= window + 1e-9; t += 0.2) {
     const rss = fn(t);
-    samples.push({ t, rss, main: rss - (o.kids ?? 0), kids: o.kids ?? 0 });
+    samples.push({
+      t,
+      rss,
+      main: rss - (o.kids ?? 0),
+      kids: o.kids ?? 0,
+      anon: o.anon ?? null,
+      file: o.file ?? null,
+      shmem: o.shmem ?? null,
+    });
   }
   return {
     ...summarize(samples, { quietSec: o.steadySec ?? 10 }),
