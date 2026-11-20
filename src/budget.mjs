@@ -275,7 +275,20 @@ export function evaluate(m, opts) {
   const spreadNote = (ref, limitMb, name) => {
     const s = ref.steadySpreadMb;
     if (s === null || s <= limitMb) return null;
-    return `${name} steady RSS spread across ${ref.runs} runs is ${s.toFixed(1)} MB (max-min), over the ${limitMb} MB budget of this check: too noisy for a verdict; rerun on a quieter machine or with more runs`;
+    let note = `${name} steady RSS spread across ${ref.runs} runs is ${s.toFixed(1)} MB (max-min), over the ${limitMb} MB budget of this check: too noisy for a verdict; rerun on a quieter machine or with more runs`;
+    // Issue #7: the residual total-RSS spread on long sessions is usually
+    // file-backed pages (page cache of the session file plus shared
+    // libraries) moving with host I/O pressure, not retention. Say so, and
+    // point at the column that is comparable run to run.
+    const anon = ref.anonSteadySpreadMb;
+    if (anon !== null && anon <= limitMb) {
+      const file =
+        ref.fileSteadySpreadMb === null
+          ? ""
+          : ` and RssFile ${ref.fileSteadySpreadMb.toFixed(1)} MB`;
+      note += `; it sits outside the JS heap in file-backed pages (RssAnon spread ${anon.toFixed(1)} MB${file}), so this machine's page cache is moving, not the measured process's retention`;
+    }
+    return note;
   };
 
   const cases = CASE_ORDER.filter((c) => m[c]);
