@@ -27,8 +27,10 @@ export function max(values) {
 /**
  * One RSS sample. t is seconds since spawn. rss is the TOTAL memory of the pi
  * process: main pid plus every descendant, in MB. main and kids split it for
- * diagnosis.
- * @typedef {{ t: number, rss: number, main: number, kids: number }} Sample
+ * diagnosis. anon/file/shmem are the same total split by /proc RssAnon,
+ * RssFile and RssShmem on Linux (issue #7 locates the long-session spread);
+ * null or absent where the platform does not report them.
+ * @typedef {{ t: number, rss: number, main: number, kids: number, anon?: number | null, file?: number | null, shmem?: number | null }} Sample
  */
 
 /**
@@ -90,6 +92,9 @@ export function findSettle(samples, o = {}) {
  * @property {number | null} mainSteadyMb median main-pid RSS of the settled window
  * @property {number | null} childrenSteadyMb median descendant RSS of the settled window
  * @property {number} childrenSpikeMb max descendant RSS
+ * @property {number | null} anonSteadyMb median RssAnon of the settled window
+ * @property {number | null} fileSteadyMb median RssFile of the settled window
+ * @property {number | null} shmemSteadyMb median RssShmem of the settled window
  */
 
 /**
@@ -123,7 +128,26 @@ export function summarize(samples, o = {}) {
     mainSteadyMb: tail.length ? median(tail.map((s) => s.main)) : null,
     childrenSteadyMb: tail.length ? median(tail.map((s) => s.kids)) : null,
     childrenSpikeMb: max(samples.map((s) => s.kids)),
+    anonSteadyMb: medSampleField(tail, "anon"),
+    fileSteadyMb: medSampleField(tail, "file"),
+    shmemSteadyMb: medSampleField(tail, "shmem"),
   };
+}
+
+/**
+ * Median of a nullable per-sample breakdown field over the settled window;
+ * null when the window is empty or the field is not reported (non-Linux).
+ * @param {Sample[]} tail
+ * @param {"anon" | "file" | "shmem"} k
+ * @returns {number | null}
+ */
+function medSampleField(tail, k) {
+  const v = /** @type {number[]} */ (
+    tail
+      .map((s) => s[k])
+      .filter((x) => typeof x === "number" && !Number.isNaN(x))
+  );
+  return v.length ? median(v) : null;
 }
 
 /**
@@ -135,6 +159,8 @@ export function summarize(samples, o = {}) {
  * @param {number} vanillaSteadyMb
  * @param {number} steadyBudgetMb
  * @param {number} [hold]
+ * @param {"rss" | "anon"} [field] sample field the release is measured on
+ *   ("anon" = RssAnon where reported, total RSS elsewhere)
  * @returns {number | null}
  */
 export function releaseSeconds(
@@ -142,17 +168,20 @@ export function releaseSeconds(
   vanillaSteadyMb,
   steadyBudgetMb,
   hold = 3,
+  field = "rss",
 ) {
   if (samples.length === 0) return null;
+  /** @param {Sample} s */
+  const value = (s) => (field === "anon" ? (s.anon ?? s.rss) : s.rss);
   let peakIdx = 0;
   for (let i = 0; i < samples.length; i++) {
-    if (samples[i].rss > samples[peakIdx].rss) peakIdx = i;
+    if (value(samples[i]) > value(samples[peakIdx])) peakIdx = i;
   }
   const peak = samples[peakIdx];
-  if (peak.rss - vanillaSteadyMb <= steadyBudgetMb) return 0;
+  if (value(peak) - vanillaSteadyMb <= steadyBudgetMb) return 0;
   let streak = 0;
   for (let i = peakIdx + 1; i < samples.length; i++) {
-    if (samples[i].rss - vanillaSteadyMb <= steadyBudgetMb) {
+    if (value(samples[i]) - vanillaSteadyMb <= steadyBudgetMb) {
       streak++;
       if (streak >= hold) return samples[i - streak + 1].t - peak.t;
     } else {

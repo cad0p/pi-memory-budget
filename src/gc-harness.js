@@ -57,8 +57,10 @@ export default function pmbGcHarness() {
       const m = process.memoryUsage();
       base = m.heapUsed;
       // Diagnostic only (post-GC numbers); budgets stay on total RSS.
+      // heapTotal next to heapUsed: the gap is V8-committed but unused pages,
+      // one of the long-session spread suspects (issue #7).
       process.stderr.write(
-        `${MARK} diag ${JSON.stringify({ heapUsed: m.heapUsed, external: m.external, arrayBuffers: m.arrayBuffers })}\n`,
+        `${MARK} diag ${JSON.stringify({ heapUsed: m.heapUsed, heapTotal: m.heapTotal, external: m.external, arrayBuffers: m.arrayBuffers })}\n`,
       );
     }
   }, INTERVAL_MS);
