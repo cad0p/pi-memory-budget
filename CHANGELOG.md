@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [calver-released]
+
+<!-- USER-EDITABLE SECTION START -->
+<!-- Add your curated release notes here. -->
+<!-- USER-EDITABLE SECTION END -->
+
+### 🚀 Features
+
+- Count shared file pages once across the process tree on Linux, macOS report-only (closes #10) ([#11](https://github.com/cad0p/pi-memory-budget/pull/11))
+
+### 🐛 Bug Fixes
+
+- RSS breakdown per sample and a pinned malloc mmap threshold for the long cases (closes #7) ([#8](https://github.com/cad0p/pi-memory-budget/pull/8))
+
+
 ## [0.1.0] - 2026-11-19
 
 <!-- USER-EDITABLE SECTION START -->
