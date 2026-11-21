@@ -29,21 +29,45 @@ export function max(values) {
  * process: main pid plus every descendant, in MB. main and kids split it for
  * diagnosis. anon/file/shmem are the same total split by /proc RssAnon,
  * RssFile and RssShmem on Linux (issue #7 locates the long-session spread);
- * null or absent where the platform does not report them.
- * @typedef {{ t: number, rss: number, main: number, kids: number, anon?: number | null, file?: number | null, shmem?: number | null }} Sample
+ * null or absent where the platform does not report them. dedup is the
+ * deduplicated total (issue #10): anonymous RSS of the subtree plus every file
+ * mapping counted once, so shared file-backed pages are not charged twice; null
+ * or absent where smaps does not exist (macOS).
+ * @typedef {{ t: number, rss: number, main: number, kids: number, anon?: number | null, file?: number | null, shmem?: number | null, dedup?: number | null }} Sample
  */
 
 /**
+ * What a measurement reads off a sample.
+ * - "rss": summed RSS of the subtree, every file mapping counted per process.
+ * - "dedup": deduplicated RSS (Linux only; falls back to rss where the
+ *   platform cannot see shared pages).
+ * - "anon": RssAnon (release checks in older reports; falls back to rss).
+ * @typedef {"rss" | "dedup" | "anon"} MetricField
+ */
+
+/**
+ * @param {Sample} s
+ * @param {MetricField} [field]
+ * @returns {number}
+ */
+export function metricValue(s, field = "rss") {
+  if (field === "dedup") return s.dedup ?? s.rss;
+  if (field === "anon") return s.anon ?? s.rss;
+  return s.rss;
+}
+
+/**
  * The first quiescent point: the earliest T, at least quietSec after spawn,
- * whose trailing quietSec window has a total-RSS range under maxRangeMb and
- * whose level then holds for the rest of the run. Settling late is a real
- * signal (still-loading process, deferred work), so the caller caps it with
- * settleMax.
+ * whose trailing quietSec window has a range under maxRangeMb in the measured
+ * field and whose level then holds for the rest of the run. Settling late is a
+ * real signal (still-loading process, deferred work), so the caller caps it
+ * with settleMax.
  * @param {Sample[]} samples
- * @param {{ quietSec?: number, maxRangeMb?: number, settleMax?: number, settleMin?: number }} [o]
+ * @param {{ quietSec?: number, maxRangeMb?: number, settleMax?: number, settleMin?: number, field?: MetricField }} [o]
  * @returns {{ settled: boolean, t: number | null, quietSec: number }}
  */
 export function findSettle(samples, o = {}) {
+  const field = o.field ?? "rss";
   const quietSec = o.quietSec ?? 10;
   const maxRangeMb = o.maxRangeMb ?? 5;
   const settleMax = o.settleMax ?? Number.POSITIVE_INFINITY;
@@ -65,13 +89,15 @@ export function findSettle(samples, o = {}) {
     for (let j = i; j >= 0; j--) {
       const s = samples[j];
       if (T - s.t > quietSec) break;
-      if (s.rss < lo) lo = s.rss;
-      if (s.rss > hi) hi = s.rss;
+      const v = metricValue(s, field);
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
     }
     if (!Number.isFinite(lo) || hi - lo >= maxRangeMb) continue;
     let holds = true;
     for (let j = i + 1; j < samples.length; j++) {
-      if (samples[j].rss > hi + slack || samples[j].rss < lo - slack) {
+      const v = metricValue(samples[j], field);
+      if (v > hi + slack || v < lo - slack) {
         holds = false;
         break;
       }
@@ -85,9 +111,9 @@ export function findSettle(samples, o = {}) {
  * @typedef {object} RunSummary
  * @property {boolean} settled whether quiescence was found before settleMax
  * @property {number | null} settleT seconds since spawn at which the process settled
- * @property {number | null} steadyMb median total RSS of the settled 10 s window; null when not settled
- * @property {number} spikeMb max total RSS over the whole run
- * @property {number | null} releasedMb total RSS of the last sample
+ * @property {number | null} steadyMb median RSS of the settled 10 s window in the measured field; null when not settled
+ * @property {number} spikeMb max RSS of the run in the measured field
+ * @property {number | null} releasedMb RSS of the last sample in the measured field
  * @property {number} peakT seconds since spawn at which the spike happened
  * @property {number | null} mainSteadyMb median main-pid RSS of the settled window
  * @property {number | null} childrenSteadyMb median descendant RSS of the settled window
@@ -99,19 +125,23 @@ export function findSettle(samples, o = {}) {
 
 /**
  * @param {Sample[]} samples
- * @param {{ settleMax?: number, quietSec?: number, settleMin?: number }} [o]
+ * @param {{ settleMax?: number, quietSec?: number, settleMin?: number, field?: MetricField }} [o]
+ *   field: which metric steady/spike/released are computed on (default rss)
  * @returns {RunSummary}
  */
 export function summarize(samples, o = {}) {
   if (samples.length === 0) throw new Error("no RSS samples collected");
+  const field = o.field ?? "rss";
   const last = samples[samples.length - 1];
   const settle = findSettle(samples, {
     quietSec: o.quietSec,
     settleMax: o.settleMax,
     settleMin: o.settleMin,
+    field,
   });
   let peak = samples[0];
-  for (const s of samples) if (s.rss > peak.rss) peak = s;
+  for (const s of samples)
+    if (metricValue(s, field) > metricValue(peak, field)) peak = s;
   const tail =
     settle.t === null
       ? []
@@ -121,9 +151,11 @@ export function summarize(samples, o = {}) {
   return {
     settled: settle.settled,
     settleT: settle.t,
-    steadyMb: tail.length ? median(tail.map((s) => s.rss)) : null,
-    spikeMb: peak.rss,
-    releasedMb: last.rss,
+    steadyMb: tail.length
+      ? median(tail.map((s) => metricValue(s, field)))
+      : null,
+    spikeMb: metricValue(peak, field),
+    releasedMb: metricValue(last, field),
     peakT: peak.t,
     mainSteadyMb: tail.length ? median(tail.map((s) => s.main)) : null,
     childrenSteadyMb: tail.length ? median(tail.map((s) => s.kids)) : null,
@@ -159,8 +191,7 @@ function medSampleField(tail, k) {
  * @param {number} vanillaSteadyMb
  * @param {number} steadyBudgetMb
  * @param {number} [hold]
- * @param {"rss" | "anon"} [field] sample field the release is measured on
- *   ("anon" = RssAnon where reported, total RSS elsewhere)
+ * @param {MetricField} [field] sample field the release is measured on
  * @returns {number | null}
  */
 export function releaseSeconds(
@@ -172,7 +203,7 @@ export function releaseSeconds(
 ) {
   if (samples.length === 0) return null;
   /** @param {Sample} s */
-  const value = (s) => (field === "anon" ? (s.anon ?? s.rss) : s.rss);
+  const value = (s) => metricValue(s, field);
   let peakIdx = 0;
   for (let i = 0; i < samples.length; i++) {
     if (value(samples[i]) > value(samples[peakIdx])) peakIdx = i;

@@ -22,18 +22,20 @@ function smapsEntry(m) {
   const start = m.start ?? "7f0000000000";
   const end = `${start.slice(0, 8)}1000`;
   const header = `${start}-${end} ${m.perms ?? "rw-p"} ${m.offset ?? "00000000"} ${m.dev ?? "00:00"} ${m.inode ?? "0"}${m.path ? `    ${m.path}` : ""}`;
+  const pad = (/** @type {string} */ label, /** @type {number} */ kb) =>
+    `${label}${" ".repeat(22 - label.length)}${kb} kB`;
   return [
     header,
-    "Size:                  " + m.rssKb + " kB",
-    "KernelPageSize:            4 kB",
-    "MMUPageSize:               4 kB",
-    "Rss:                   " + m.rssKb + " kB",
-    "Pss:                   " + Math.floor(m.rssKb / 2) + " kB",
-    "Shared_Clean:              0 kB",
-    "Private_Dirty:         " + m.rssKb + " kB",
-    "Referenced:            " + m.rssKb + " kB",
-    "Anonymous:             " + m.rssKb + " kB",
-    "AnonHugePages:             0 kB",
+    pad("Size:", m.rssKb),
+    pad("KernelPageSize:", 4),
+    pad("MMUPageSize:", 4),
+    pad("Rss:", m.rssKb),
+    pad("Pss:", Math.floor(m.rssKb / 2)),
+    pad("Shared_Clean:", 0),
+    pad("Private_Dirty:", m.rssKb),
+    pad("Referenced:", m.rssKb),
+    pad("Anonymous:", m.rssKb),
+    pad("AnonHugePages:", 0),
     "VmFlags: rd wr mr mw me ac sd",
     "",
   ].join("\n");

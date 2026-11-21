@@ -34,6 +34,10 @@ run options:
 Exit code: 0 all budgets pass or are waived, 1 a budget FAILs, 2 usage or runtime error,
 3 no FAIL but at least one check is INCONCLUSIVE (e.g. vanilla's own run spread
 exceeds the budget, or a release could not be observed).
+Checks read deduplicated RSS on Linux (shared file-backed pages counted once across
+the process tree). Platforms without /proc/<pid>/smaps (macOS) cannot compute it:
+there the checks are REPORT-ONLY and the exit code is 0 unless the run itself failed
+(2). Pass/fail comes from the Linux run.
 `;
 
 /**

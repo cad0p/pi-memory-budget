@@ -2,8 +2,9 @@
 
 import { spawn } from "node:child_process";
 import { buildPiArgs } from "./pi.mjs";
+import { hasSmaps } from "./platform.mjs";
 import { readRss } from "./sampler.mjs";
-import { summarize } from "./stats.mjs";
+import { metricValue, summarize } from "./stats.mjs";
 
 /** @type {Set<import("node:child_process").ChildProcess>} */
 const live = new Set();
@@ -107,10 +108,17 @@ const SETTLE_RANGE_MB = 5;
  * @property {string[]} [extraArgs]
  * @property {number} [sampleMs]
  * @property {number} [pingMs]
+ * @property {"dedup" | "rss"} [metric] what steady/spike/released are computed
+ *   on; default the deduplicated metric where smaps exists (Linux), summed RSS
+ *   elsewhere
  */
 
 /**
  * @typedef {import("./stats.mjs").RunSummary & {
+ *   metric: "dedup" | "rss",
+ *   summedSteadyMb: number | null,
+ *   summedSpikeMb: number,
+ *   summedReleasedMb: number | null,
  *   samples: import("./stats.mjs").Sample[],
  *   maxGapMs: number,
  *   readyMs: number | null,
@@ -136,6 +144,9 @@ export async function measureRun(spec) {
   const settleMinSec = spec.settleMinSec ?? 0;
   const releaseSec = spec.releaseSec ?? 0;
   const useGc = spec.gc !== false;
+  // The metric the checks read: deduplicated RSS where smaps exists, summed
+  // RSS everywhere else (and then the checks are report-only, see budget.mjs).
+  const metric = spec.metric ?? (hasSmaps() ? "dedup" : "rss");
   const args = [
     ...spec.pi.args,
     ...buildPiArgs({
@@ -260,6 +271,7 @@ export async function measureRun(spec) {
           anon: r.anonMb,
           file: r.fileMb,
           shmem: r.shmemMb,
+          dedup: r.dedupMb,
         });
       }
       const lastT = (performance.now() - t0) / 1000;
@@ -280,8 +292,9 @@ export async function measureRun(spec) {
           for (let k = samples.length - 1; k >= 0; k--) {
             const s = samples[k];
             if (last.t - s.t > spec.steadySec) break;
-            if (s.rss < lo) lo = s.rss;
-            if (s.rss > hi) hi = s.rss;
+            const v = metricValue(s, metric);
+            if (v < lo) lo = v;
+            if (v > hi) hi = v;
           }
           quiet = hi - lo < SETTLE_RANGE_MB;
         }
@@ -292,9 +305,12 @@ export async function measureRun(spec) {
       // so the check never has to fail on an unobserved release.
       let waitForRelease = false;
       if (releaseSec > 0 && samples.length) {
-        const peak = samples.reduce((a, b) => (b.rss > a.rss ? b : a));
+        const peak = samples.reduce((a, b) =>
+          metricValue(b, metric) > metricValue(a, metric) ? b : a,
+        );
         waitForRelease =
-          samples[samples.length - 1].rss >= peak.rss - 0.5 &&
+          metricValue(samples[samples.length - 1], metric) >=
+            metricValue(peak, metric) - 0.5 &&
           lastT < peak.t + releaseSec &&
           lastT < spec.windowSec + RELEASE_EXTEND_CAP_SEC;
       }
@@ -307,12 +323,26 @@ export async function measureRun(spec) {
     }
     for (const sent of pending.values())
       maxGap = Math.max(maxGap, performance.now() - sent);
+    // Two summaries of the same samples: the one the checks read (dedup on
+    // Linux) and the summed one, which the report keeps as a column.
+    const summary = summarize(samples, {
+      settleMax: settleMaxSec,
+      quietSec: spec.steadySec,
+      settleMin: settleMinSec,
+      field: metric,
+    });
+    const summed = summarize(samples, {
+      settleMax: settleMaxSec,
+      quietSec: spec.steadySec,
+      settleMin: settleMinSec,
+      field: "rss",
+    });
     return {
-      ...summarize(samples, {
-        settleMax: settleMaxSec,
-        quietSec: spec.steadySec,
-        settleMin: settleMinSec,
-      }),
+      ...summary,
+      metric,
+      summedSteadyMb: summed.steadyMb,
+      summedSpikeMb: summed.spikeMb,
+      summedReleasedMb: summed.releasedMb,
       samples,
       maxGapMs: maxGap,
       readyMs,
