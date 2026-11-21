@@ -2,12 +2,42 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { test } from "node:test";
 import {
+  dedupeMappings,
   descendantsRssKb,
+  mappingKey,
   parsePsTable,
+  parseSmaps,
   parseStatusRss,
   parseVmRss,
+  procSmaps,
   readRss,
 } from "../src/sampler.mjs";
+
+/**
+ * One mapping of a synthetic /proc/<pid>/smaps: the header plus the same
+ * ~20 diagnostic lines the kernel writes, of which only Rss is read.
+ * @param {{ start?: string, perms?: string, offset?: string, dev?: string, inode?: string, path?: string, rssKb: number }} m
+ */
+function smapsEntry(m) {
+  const start = m.start ?? "7f0000000000";
+  const end = `${start.slice(0, 8)}1000`;
+  const header = `${start}-${end} ${m.perms ?? "rw-p"} ${m.offset ?? "00000000"} ${m.dev ?? "00:00"} ${m.inode ?? "0"}${m.path ? `    ${m.path}` : ""}`;
+  return [
+    header,
+    "Size:                  " + m.rssKb + " kB",
+    "KernelPageSize:            4 kB",
+    "MMUPageSize:               4 kB",
+    "Rss:                   " + m.rssKb + " kB",
+    "Pss:                   " + Math.floor(m.rssKb / 2) + " kB",
+    "Shared_Clean:              0 kB",
+    "Private_Dirty:         " + m.rssKb + " kB",
+    "Referenced:            " + m.rssKb + " kB",
+    "Anonymous:             " + m.rssKb + " kB",
+    "AnonHugePages:             0 kB",
+    "VmFlags: rd wr mr mw me ac sd",
+    "",
+  ].join("\n");
+}
 
 test("parseVmRss reads the VmRSS line of /proc/<pid>/status", () => {
   const status =
@@ -87,6 +117,140 @@ test("parseStatusRss reads VmRSS and the anon/file/shmem breakdown", () => {
     fileKb: null,
     shmemKb: null,
   });
+});
+
+test("parseSmaps keeps the dedupe key and Rss of every mapping", () => {
+  const text = [
+    smapsEntry({
+      offset: "00000000",
+      dev: "08:02",
+      inode: "4242",
+      path: "/usr/lib/libc.so.6",
+      rssKb: 1200,
+    }),
+    smapsEntry({ path: "[heap]", rssKb: 300 }),
+    smapsEntry({
+      path: "/usr/bin/node",
+      perms: "r-xp",
+      inode: "99",
+      rssKb: 40,
+    }),
+  ].join("");
+  assert.deepEqual(parseSmaps(text), [
+    { key: "08:02:4242:00000000", rssKb: 1200 },
+    { key: null, rssKb: 300 },
+    { key: "00:00:99:00000000", rssKb: 40 },
+  ]);
+  // An empty or headerless file is no mappings, not an error.
+  assert.deepEqual(parseSmaps(""), []);
+  assert.deepEqual(parseSmaps("Name: x\nRss: 4 kB\n"), []);
+});
+
+test("mappingKey: anonymous vs file-backed, shmem and deleted files by inode", () => {
+  // no pathname, [heap], [stack], [anon:...]: anonymous, summed per process
+  assert.equal(mappingKey("00:00", "0", "00000000", undefined), null);
+  assert.equal(mappingKey("00:00", "0", "00000000", ""), null);
+  assert.equal(mappingKey("00:00", "0", "00000000", "[heap]"), null);
+  assert.equal(mappingKey("00:00", "0", "00000000", "[stack]"), null);
+  assert.equal(mappingKey("00:00", "0", "00000000", "[anon:thread]"), null);
+  // the kernel's shared objects: one copy per machine, counted once
+  assert.equal(mappingKey("00:00", "0", "00000000", "[vdso]"), "vdso");
+  assert.equal(mappingKey("00:00", "0", "00000000", "[vvar]"), "vvar");
+  // files, memfd, /dev/shm, deleted files: by device, inode and offset
+  assert.equal(
+    mappingKey("08:02", "4242", "00000000", "/usr/bin/node"),
+    "08:02:4242:00000000",
+  );
+  assert.equal(
+    mappingKey("00:1e", "777", "00100000", "/memfd:session (deleted)"),
+    "00:1e:777:00100000",
+  );
+  assert.equal(
+    mappingKey("00:1e", "778", "00000000", "/dev/shm/pi-index"),
+    "00:1e:778:00000000",
+  );
+  assert.equal(
+    mappingKey("08:02", "4242", "00000000", "/usr/bin/node (deleted)"),
+    "08:02:4242:00000000",
+    "a deleted file keeps its inode key",
+  );
+});
+
+test("dedupeMappings: anonymous summed, a shared file mapping counted once", () => {
+  // two node processes: the same node binary and libc (same dev:inode:offset,
+  // different Rss), each with its own anonymous heap
+  const parent = parseSmaps(
+    [
+      smapsEntry({ inode: "99", path: "/usr/bin/node", rssKb: 20000 }),
+      smapsEntry({ inode: "77", path: "/usr/lib/libc.so.6", rssKb: 4000 }),
+      smapsEntry({ path: "[heap]", rssKb: 50000 }),
+      smapsEntry({ rssKb: 1000 }),
+    ].join(""),
+  );
+  const child = parseSmaps(
+    [
+      smapsEntry({ inode: "99", path: "/usr/bin/node", rssKb: 18000 }),
+      smapsEntry({ inode: "77", path: "/usr/lib/libc.so.6", rssKb: 4000 }),
+      smapsEntry({ path: "[heap]", rssKb: 5000 }),
+    ].join(""),
+  );
+  const d = dedupeMappings([parent, child]);
+  // anon 50000 + 1000 + 5000; files: max(20000,18000) + 4000
+  assert.equal(d.anonKb, 56000);
+  assert.equal(d.fileKb, 24000);
+  assert.equal(d.totalKb, 80000);
+  // summed RSS of the same two processes would be 20000+4000+50000+1000
+  // +18000+4000+5000 = 102000 KB: the shared pages are 22000 KB of it.
+  assert.equal(
+    dedupeMappings([parent]).totalKb,
+    75000,
+    "one process: no dedupe",
+  );
+  // a process that is already gone contributes nothing
+  assert.equal(dedupeMappings([parent, null]).totalKb, 75000);
+});
+
+test("dedupeMappings takes the max Rss of a key, not the sum", () => {
+  const a = [{ key: "08:02:1:00000000", rssKb: 2000 }];
+  const b = [{ key: "08:02:1:00000000", rssKb: 5000 }];
+  const c = [{ key: "08:02:1:00000000", rssKb: 1000 }];
+  assert.equal(dedupeMappings([a, b, c]).fileKb, 5000);
+  // different offsets in the same file are different keys (two regions)
+  const d = [{ key: "08:02:1:00000000", rssKb: 2000 }];
+  const e = [{ key: "08:02:1:00100000", rssKb: 3000 }];
+  assert.equal(dedupeMappings([d, e]).fileKb, 5000);
+});
+
+test("procSmaps returns null for a gone process and refuses to guess on EACCES", () => {
+  assert.equal(procSmaps(2 ** 22 - 3), null);
+  if (process.platform === "linux" && process.getuid?.() !== 0) {
+    // /proc/1/smaps is not ours to read: the metric must fail loudly, never
+    // silently fall back to summed RSS (which is the number it corrects).
+    assert.throws(() => procSmaps(1), /refusing to fall back to summed RSS/);
+  }
+});
+
+test("readRss dedupes the file pages a node child shares with this process", async () => {
+  if (process.platform !== "linux") return;
+  const kid = spawn(
+    process.execPath,
+    ["-e", "const b=Buffer.alloc(5*1024*1024,1);setInterval(()=>b[0]++,500)"],
+    { stdio: "ignore" },
+  );
+  try {
+    await new Promise((r) => setTimeout(r, 1500));
+    const r = await readRss(process.pid);
+    assert.ok(r.dedupMb !== null && r.rssMb !== null);
+    // The child maps the same node binary and libs: summed RSS charges them
+    // twice, the deduplicated metric once (issue #10).
+    assert.ok(
+      r.rssMb - r.dedupMb > 20,
+      `summed ${r.rssMb.toFixed(1)} vs dedupe ${r.dedupMb.toFixed(1)}: child file pages not deduplicated`,
+    );
+    assert.ok(r.dedupMb > 30, `dedupe ${r.dedupMb}`);
+  } finally {
+    kid.kill("SIGKILL");
+  }
 });
 
 test("readRss reports the anon/file breakdown on Linux", async () => {
