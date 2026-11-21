@@ -9,6 +9,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { writeFixture } from "../src/fixture.mjs";
+import { hasSmaps } from "../src/platform.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const pi = path.join(root, "node_modules", ".bin", "pi");
@@ -17,6 +18,13 @@ const skip =
   process.env.PMB_E2E !== "1"
     ? "set PMB_E2E=1 to run (needs pi in node_modules)"
     : false;
+// Verdict tests: pass/fail is decided only where /proc/<pid>/smaps exists (#10).
+// Elsewhere the run is report-only, which the REPORT-ONLY test below covers.
+const skipVerdict =
+  skip ||
+  (hasSmaps()
+    ? false
+    : "report-only platform (no /proc/<pid>/smaps): verdicts come from the Linux run");
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pmb-e2e-"));
 process.on("exit", () => fs.rmSync(dir, { recursive: true, force: true }));
 const fx = path.join(dir, "fixtures");
@@ -128,7 +136,7 @@ test(
 
 test(
   "an extension holding ~5 MB passes the budgets",
-  { skip, timeout: 600000 },
+  { skip: skipVerdict, timeout: 600000 },
   () => {
     const r = runCli([
       "--extension",
@@ -178,7 +186,7 @@ test(
 
 test(
   "an extension holding ~60 MB fails the steady budget with exit code 1",
-  { skip, timeout: 600000 },
+  { skip: skipVerdict, timeout: 600000 },
   () => {
     const r = runCli([
       "--extension",
@@ -203,7 +211,7 @@ test(
 
 test(
   "a waiver turns that failure into WAIVED and exit code 0",
-  { skip, timeout: 600000 },
+  { skip: skipVerdict, timeout: 600000 },
   () => {
     const cfg = path.join(dir, "waive.json");
     fs.writeFileSync(
@@ -235,7 +243,7 @@ test(
 
 test(
   "memory that grows with the session fails the growth budget",
-  { skip, timeout: 600000 },
+  { skip: skipVerdict, timeout: 600000 },
   () => {
     const r = runCli([
       "--extension",
@@ -256,7 +264,7 @@ test(
 
 test(
   "an extension whose child holds ~60 MB fails steady anyway (children are budgeted)",
-  { skip, timeout: 600000 },
+  { skip: skipVerdict, timeout: 600000 },
   () => {
     const r = runCli([
       "--extension",
@@ -284,7 +292,7 @@ test(
 
 test(
   "an extension that forks a node child is charged what the child adds, not the node binary again",
-  { skip, timeout: 900000 },
+  { skip: skipVerdict, timeout: 900000 },
   () => {
     // The child holds ~5 MB of anonymous memory but maps the node binary and
     // the shared libraries pi already maps: summed RSS charges that twice
