@@ -244,6 +244,53 @@ test("gc normalization: harness -e in the argv, --expose-gc in NODE_OPTIONS, off
   assert.equal(info3.gcExposed, false);
 });
 
+test("measureRun: Linux measures the deduplicated metric and reports summed RSS next to it", async () => {
+  if (process.platform !== "linux") return;
+  const r = await measureRun({
+    pi,
+    extensions: [],
+    sessionFile: null,
+    cwd: dir,
+    env: { ...process.env, FAKE_PI_MB: "60" },
+    windowSec: 3,
+    steadySec: 2,
+  });
+  assert.equal(r.metric, "dedup");
+  assert.ok(r.steadyMb !== null && r.summedSteadyMb !== null);
+  // a single process shares nothing: dedupe == summed (status read vs smaps
+  // read is the only difference)
+  assert.ok(
+    Math.abs(r.steadyMb - r.summedSteadyMb) < 1,
+    `dedupe ${r.steadyMb} vs summed ${r.summedSteadyMb}`,
+  );
+  assert.ok(
+    r.samples.every((s) => typeof s.dedup === "number"),
+    "every sample carries the deduplicated total",
+  );
+});
+
+test("measureRun: a platform without smaps reads summed RSS and says so (PMB_PLATFORM seam)", async () => {
+  const prev = process.env.PMB_PLATFORM;
+  process.env.PMB_PLATFORM = "darwin";
+  try {
+    const r = await measureRun({
+      pi,
+      extensions: [],
+      sessionFile: null,
+      cwd: dir,
+      env: { ...process.env, FAKE_PI_MB: "60" },
+      windowSec: 3,
+      steadySec: 2,
+    });
+    assert.equal(r.metric, "rss");
+    assert.equal(r.summedSteadyMb, r.steadyMb);
+    assert.ok(r.samples.every((s) => s.dedup === null));
+  } finally {
+    if (prev === undefined) delete process.env.PMB_PLATFORM;
+    else process.env.PMB_PLATFORM = prev;
+  }
+});
+
 test("parseGcDiag reads the last harness diag line", () => {
   assert.equal(parseGcDiag("nothing"), null);
   const d = parseGcDiag(

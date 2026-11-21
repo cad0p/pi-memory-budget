@@ -4,6 +4,7 @@ import {
   findSettle,
   max,
   median,
+  metricValue,
   releaseSeconds,
   summarize,
 } from "../src/stats.mjs";
@@ -143,4 +144,64 @@ test("releaseSeconds: 0 when the peak is within budget, null when it never relea
   assert.equal(releaseSeconds(fakeRun(() => 110).samples, 100, 20), 0);
   assert.equal(releaseSeconds(fakeRun(() => 300).samples, 100, 20), null);
   assert.equal(releaseSeconds([], 100, 20), null);
+});
+
+test("metricValue: dedup and anon fall back to summed RSS where they are not reported", () => {
+  const s = { t: 0, rss: 200, main: 200, kids: 0, dedup: 150, anon: 120 };
+  assert.equal(metricValue(s, "rss"), 200);
+  assert.equal(metricValue(s, "dedup"), 150);
+  assert.equal(metricValue(s, "anon"), 120);
+  // a platform without smaps: dedup is null, the checks then read summed RSS
+  const mac = { t: 0, rss: 200, main: 200, kids: 0, dedup: null, anon: null };
+  assert.equal(metricValue(mac, "dedup"), 200);
+  assert.equal(metricValue(mac, "anon"), 200);
+  assert.equal(metricValue(mac), 200);
+});
+
+test("findSettle on dedup: a noisy summed total does not stop the metric settling", () => {
+  /** @type {import("../src/stats.mjs").Sample[]} */
+  const samples = [];
+  let i = 0;
+  for (let t = 0; t <= 40 + 1e-9; t += 0.2) {
+    // summed oscillates by 20 MB (page cache of a forked child), dedupe flat
+    samples.push({
+      t,
+      rss: 250 + (i++ % 2 ? 10 : -10),
+      main: 250,
+      kids: 0,
+      dedup: 200,
+    });
+  }
+  assert.equal(findSettle(samples, { quietSec: 10 }).settled, false);
+  const s = findSettle(samples, { quietSec: 10, field: "dedup" });
+  assert.equal(s.settled, true);
+});
+
+test("summarize on the dedup field: steady, spike and released follow the metric", () => {
+  /** @type {import("../src/stats.mjs").Sample[]} */
+  const samples = [];
+  for (let t = 0; t <= 40 + 1e-9; t += 0.2) {
+    const rss = t < 15 ? 200 : 230;
+    samples.push({ t, rss, main: rss, kids: 0, dedup: t < 15 ? 200 : 205 });
+  }
+  const summed = summarize(samples, { quietSec: 10 });
+  const dedup = summarize(samples, { quietSec: 10, field: "dedup" });
+  assert.equal(summed.steadyMb, 230);
+  assert.equal(summed.spikeMb, 230);
+  assert.equal(dedup.steadyMb, 205, "the level the checks read");
+  assert.equal(dedup.spikeMb, 205);
+  assert.equal(dedup.releasedMb, 205);
+  assert.equal(dedup.settled, true);
+});
+
+test("releaseSeconds on dedup: a summed plateau of shared pages is not a release problem", () => {
+  /** @type {import("../src/stats.mjs").Sample[]} */
+  const samples = [];
+  for (let t = 0; t <= 30 + 1e-9; t += 0.2) {
+    // summed stays 60 MB over vanilla after a child maps node; dedupe is flat
+    const rss = t < 5 ? 400 : 260;
+    samples.push({ t, rss, main: rss, kids: 0, dedup: 205 });
+  }
+  assert.equal(releaseSeconds(samples, 200, 20, 3, "rss"), null);
+  assert.equal(releaseSeconds(samples, 200, 20, 3, "dedup"), 0);
 });

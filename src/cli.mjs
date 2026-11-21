@@ -72,7 +72,13 @@ export async function main(argv) {
       process.stdout.write(md);
       // 1 a budget FAILs; 3 no FAIL but an INCONCLUSIVE check (noisy baseline,
       // unobserved release): a distinct non-zero so CI can tell them apart.
+      // Where the platform cannot compute the deduplicated metric (no smaps on
+      // macOS) no check decides anything: the report says REPORT-ONLY and the
+      // exit code stays 0, INCONCLUSIVE included — there is no verdict to be
+      // unsure about, and the gate is the Linux run. A run that could not be
+      // measured at all throws above and still exits 2.
       if (result.checks.some((c) => c.status === "FAIL")) return 1;
+      if (result.reportOnly) return 0;
       return result.ok ? 0 : 3;
     }
     throw new UsageError(`unknown command "${cmd}"\n\n${USAGE}`);

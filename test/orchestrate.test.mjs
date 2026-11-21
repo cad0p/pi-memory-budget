@@ -7,6 +7,7 @@ import { parseRunArgs } from "../src/args.mjs";
 import { main } from "../src/cli.mjs";
 import { resolveOptions } from "../src/config.mjs";
 import { runBudget } from "../src/orchestrate.mjs";
+import { hasSmaps } from "../src/platform.mjs";
 import { renderMarkdown } from "../src/report.mjs";
 import { fakeRun } from "./helpers.mjs";
 
@@ -110,13 +111,14 @@ test("runBudget: matrix order, per-run fixture copies, setup hook env, vanilla/c
     [],
     "work copies removed",
   );
+  // Without smaps (macOS) every check is report-only (issue #10).
   assert.ok(
     renderMarkdown({
       result: result.result,
       budgets: o.budgets,
       waivers: o.waivers,
       meta: result.meta,
-    }).includes("Memory budget: PASS"),
+    }).includes(`Memory budget: ${hasSmaps() ? "PASS" : "REPORT-ONLY"}`),
   );
 });
 

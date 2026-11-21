@@ -409,6 +409,97 @@ test("regression is INCONCLUSIVE when the baseline extension itself is too noisy
   assert.match(c.note ?? "", /baseline steady RSS spread/);
 });
 
+test("checks read the deduplicated metric; summed RSS stays a reported aggregate", () => {
+  // The candidate forks a node child: summed +48 MB, of which 34 are the node
+  // binary and libs pi already maps; the deduplicated metric reads +14 MB.
+  const van = fakeRun(() => 150, { dedup: 150, metric: "dedup" });
+  const cand = fakeRun(() => 198, { dedup: 164, metric: "dedup" });
+  const r = evaluate(
+    { fresh: { vanilla: [van], candidate: [cand] } },
+    { ...opts, metric: "dedup" },
+  );
+  const c = get(r.checks, "steadyFresh");
+  assert.equal(c.status, "PASS");
+  assert.equal(c.value, 14, "the check measures the deduplicated delta");
+  assert.equal(c.detail.vanilla, 150);
+  assert.equal(c.detail.candidate, 164);
+  assert.equal(r.aggregates.fresh.candidate.steadyMb, 164);
+  assert.equal(
+    r.aggregates.fresh.candidate.summedSteadyMb,
+    198,
+    "summed RSS is still reported",
+  );
+  assert.equal(r.aggregates.fresh.candidate.summedSpikeMb, 198);
+});
+
+test("a spike made of shared file pages passes on dedupe and fails on summed RSS", () => {
+  /** @param {"rss" | "dedup"} metric */
+  const m = (metric) => ({
+    fresh: {
+      vanilla: [fakeRun(() => 150, { dedup: 150, metric })],
+      candidate: [
+        fakeRun((t) => (t < 3 ? 150 + t * 40 : 165), {
+          window: 40,
+          dedup: (t) => (t < 3 ? 150 + t * 4 : 165),
+          metric,
+        }),
+      ],
+    },
+  });
+  const dedup = evaluate(m("dedup"), { ...opts, metric: "dedup" });
+  assert.equal(get(dedup.checks, "steadyFresh").status, "PASS");
+  const spike = get(dedup.checks, "spike:fresh");
+  assert.equal(spike.status, "PASS");
+  assert.ok(spike.value !== null && spike.value < 20, `spike ${spike.value}`);
+  // the same samples read as summed RSS: +120 MB transient, FAIL
+  const summed = evaluate(m("rss"), opts);
+  assert.equal(get(summed.checks, "spike:fresh").status, "FAIL");
+  assert.ok(
+    (get(summed.checks, "spike:fresh").value ?? 0) > 100,
+    "summed RSS charges the shared pages as a spike",
+  );
+});
+
+test("report-only: no check decides and every check keeps the verdict it would have had", () => {
+  const { budgets, waivers } = resolveBudgets(undefined, {
+    steadyFresh: "big index, tracked in #42",
+  });
+  const r = evaluate(
+    { fresh: { vanilla: [flat(150)], candidate: [flat(300)] } },
+    { budgets, waivers, windowSec: 30, reportOnly: true },
+  );
+  assert.equal(r.reportOnly, true);
+  assert.equal(r.ok, true, "a platform without the metric decides nothing");
+  assert.equal(
+    r.checks.some((c) => c.status === "FAIL"),
+    false,
+  );
+  const c = get(r.checks, "steadyFresh");
+  assert.equal(c.status, "REPORT-ONLY");
+  assert.equal(c.wouldBe, "FAIL");
+  assert.equal(c.value, 150, "the measured value is still reported");
+  assert.equal(
+    c.reason,
+    "big index, tracked in #42",
+    "the waiver stays visible",
+  );
+
+  // an INCONCLUSIVE check is report-only too: there is no verdict to be
+  // unsure about, and macOS must not exit 3 on every noisy run
+  const noisy = evaluate(
+    {
+      fresh: {
+        vanilla: [flat(150), flat(171)],
+        candidate: [flat(160), flat(181)],
+      },
+    },
+    { ...opts, reportOnly: true },
+  );
+  assert.equal(get(noisy.checks, "steadyFresh").status, "REPORT-ONLY");
+  assert.equal(get(noisy.checks, "steadyFresh").wouldBe, "INCONCLUSIVE");
+  assert.equal(noisy.ok, true);
+});
+
 test("growth is reported as SKIP (not silently absent) when only one long case ran", () => {
   const m = mk(5, 5, 5);
   const r = evaluate({ fresh: m.fresh, long: m.long }, opts);

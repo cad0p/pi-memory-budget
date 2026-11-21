@@ -9,6 +9,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { writeFixture } from "../src/fixture.mjs";
+import { hasSmaps } from "../src/platform.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const pi = path.join(root, "node_modules", ".bin", "pi");
@@ -17,15 +18,23 @@ const skip =
   process.env.PMB_E2E !== "1"
     ? "set PMB_E2E=1 to run (needs pi in node_modules)"
     : false;
+// Verdict tests: pass/fail is decided only where /proc/<pid>/smaps exists (#10).
+// Elsewhere the run is report-only, which the REPORT-ONLY test below covers.
+const skipVerdict =
+  skip ||
+  (hasSmaps()
+    ? false
+    : "report-only platform (no /proc/<pid>/smaps): verdicts come from the Linux run");
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pmb-e2e-"));
 process.on("exit", () => fs.rmSync(dir, { recursive: true, force: true }));
 const fx = path.join(dir, "fixtures");
 
 /**
  * @param {string[]} args
+ * @param {Record<string, string>} [env] extra environment (the platform seam)
  * @returns {{ status: number | null, json: any, md: string, stderr: string }}
  */
-function runCli(args) {
+function runCli(args, env = {}) {
   const json = path.join(dir, `r-${Math.random().toString(36).slice(2)}.json`);
   const report = json.replace(/\.json$/, ".md");
   const r = spawnSync(
@@ -47,7 +56,7 @@ function runCli(args) {
       report,
       ...args,
     ],
-    { encoding: "utf8", timeout: 600000 },
+    { encoding: "utf8", timeout: 600000, env: { ...process.env, ...env } },
   );
   const out = fs.existsSync(json)
     ? JSON.parse(fs.readFileSync(json, "utf8"))
@@ -127,7 +136,7 @@ test(
 
 test(
   "an extension holding ~5 MB passes the budgets",
-  { skip, timeout: 600000 },
+  { skip: skipVerdict, timeout: 600000 },
   () => {
     const r = runCli([
       "--extension",
@@ -161,12 +170,23 @@ test(
       `arrayBuffers delta ${(cand.arrayBuffersMb - van.arrayBuffersMb).toFixed(1)} MB: the ~5 MB fixture buffer is not held\n${r.md}`,
     );
     assert.match(r.md, /Memory budget: PASS/);
+    // Issue #10: vanilla is one process and shares nothing with itself, so the
+    // deduplicated steady must be the summed steady (the two are read a moment
+    // apart: status vs smaps).
+    assert.equal(r.json.meta.metric, "dedup");
+    for (const c of ["fresh", "long"]) {
+      const van = r.json.aggregates[c].vanilla;
+      assert.ok(
+        Math.abs(van.steadyMb - van.summedSteadyMb) < 1,
+        `${c}: vanilla dedupe ${van.steadyMb} vs summed ${van.summedSteadyMb}`,
+      );
+    }
   },
 );
 
 test(
   "an extension holding ~60 MB fails the steady budget with exit code 1",
-  { skip, timeout: 600000 },
+  { skip: skipVerdict, timeout: 600000 },
   () => {
     const r = runCli([
       "--extension",
@@ -191,7 +211,7 @@ test(
 
 test(
   "a waiver turns that failure into WAIVED and exit code 0",
-  { skip, timeout: 600000 },
+  { skip: skipVerdict, timeout: 600000 },
   () => {
     const cfg = path.join(dir, "waive.json");
     fs.writeFileSync(
@@ -223,7 +243,7 @@ test(
 
 test(
   "memory that grows with the session fails the growth budget",
-  { skip, timeout: 600000 },
+  { skip: skipVerdict, timeout: 600000 },
   () => {
     const r = runCli([
       "--extension",
@@ -244,7 +264,7 @@ test(
 
 test(
   "an extension whose child holds ~60 MB fails steady anyway (children are budgeted)",
-  { skip, timeout: 600000 },
+  { skip: skipVerdict, timeout: 600000 },
   () => {
     const r = runCli([
       "--extension",
@@ -266,6 +286,84 @@ test(
     assert.ok(
       r.json.aggregates.fresh.candidate.childrenSteadyMb > 45,
       `children ${r.json.aggregates.fresh.candidate.childrenSteadyMb}`,
+    );
+  },
+);
+
+test(
+  "an extension that forks a node child is charged what the child adds, not the node binary again",
+  { skip: skipVerdict, timeout: 900000 },
+  () => {
+    // The child holds ~5 MB of anonymous memory but maps the node binary and
+    // the shared libraries pi already maps: summed RSS charges that twice
+    // (+~45 MB, over the +20 MB steady budget), the deduplicated metric once
+    // (+~14 MB: the child's own runtime plus the buffer).
+    const r = runCli([
+      "--extension",
+      ext("ext-fork-5mb.js"),
+      "--cases",
+      "fresh",
+      "--runs",
+      "2",
+    ]);
+    assert.equal(r.json?.meta.metric, "dedup", r.stderr);
+    const van = r.json.aggregates.fresh.vanilla;
+    const cand = r.json.aggregates.fresh.candidate;
+    const summedDelta = cand.summedSteadyMb - van.summedSteadyMb;
+    const dedupDelta = cand.steadyMb - van.steadyMb;
+    assert.ok(
+      summedDelta > 35,
+      `summed delta +${summedDelta.toFixed(1)} MB: the forked node child is not visible in summed RSS\n${r.md}`,
+    );
+    assert.ok(
+      dedupDelta < 25,
+      `deduplicated delta +${dedupDelta.toFixed(1)} MB: shared file pages were charged to the child\n${r.md}`,
+    );
+    assert.ok(
+      summedDelta - dedupDelta > 20,
+      `shared pages counted once should be > 20 MB, got ${(summedDelta - dedupDelta).toFixed(1)}\n${r.md}`,
+    );
+    // The steady check reads the deduplicated delta, which is under the +20 MB
+    // budget here; the run may still be INCONCLUSIVE on a noisy box (exit 3),
+    // which is why the numbers above, not the verdict, are the assertion.
+    assert.ok([0, 3].includes(r.status ?? -1), `exit ${r.status}\n${r.md}`);
+    assert.match(r.md, /Checks use DEDUPLICATED RSS/);
+  },
+);
+
+test(
+  "a platform without smaps is REPORT-ONLY: exit 0 where Linux fails",
+  { skip, timeout: 900000 },
+  () => {
+    // Same extension that fails the Linux run with exit 1 (see the ~60 MB test
+    // above), measured through the macOS path (ps, summed RSS) by the
+    // PMB_PLATFORM seam: the checks print the verdict a Linux run would have
+    // given and decide nothing.
+    const r = runCli(
+      ["--extension", ext("ext-leak.js"), "--cases", "fresh", "--runs", "1"],
+      { PMB_PLATFORM: "darwin" },
+    );
+    assert.equal(r.status, 0, `${r.stderr}\n${r.md}`);
+    assert.match(r.md, /^## Memory budget: REPORT-ONLY/);
+    assert.match(r.md, /no \/proc\/<pid>\/smaps/);
+    assert.match(r.md, /pass\/fail comes from the Linux run/i);
+    assert.equal(r.json.meta.reportOnly, true);
+    assert.equal(r.json.meta.metric, "rss");
+    const steady = r.json.checks.find(
+      (/** @type {{id: string}} */ c) => c.id === "steadyFresh",
+    );
+    assert.equal(steady.status, "REPORT-ONLY");
+    assert.equal(steady.wouldBe, "FAIL");
+    assert.ok(
+      steady.value > 40,
+      `the measurement still happened: +${steady.value} MB\n${r.md}`,
+    );
+    // No FAIL anywhere: the exit code cannot be 1 on such a platform.
+    assert.equal(
+      r.json.checks.some(
+        (/** @type {{status: string}} */ c) => c.status === "FAIL",
+      ),
+      false,
     );
   },
 );

@@ -23,8 +23,9 @@ const RELEASE_HOLD = 3;
 
 /**
  * @typedef {typeof DEFAULT_BUDGETS} Budgets
- * @typedef {"PASS" | "FAIL" | "WAIVED" | "SKIP" | "INCONCLUSIVE"} Status
+ * @typedef {"PASS" | "FAIL" | "WAIVED" | "SKIP" | "INCONCLUSIVE" | "REPORT-ONLY"} Status
  * @typedef {import("./runner.mjs").RunResult} RunResult
+ * @typedef {"dedup" | "rss"} Metric
  */
 
 /**
@@ -74,6 +75,9 @@ export function resolveBudgets(budgets, waivers) {
  * @property {number | null} steadyMinMb lowest per-run steady (null when no run settled)
  * @property {number | null} steadyMaxMb highest per-run steady
  * @property {number | null} steadySpreadMb max-min of per-run steady; null with fewer than 2 settled runs
+ * @property {number | null} summedSteadyMb median of per-run steady summed RSS (the metric before #10)
+ * @property {number | null} summedSteadySpreadMb max-min of per-run summed steady
+ * @property {number} summedSpikeMb median of per-run summed spike
  * @property {number} spikeMb
  * @property {number | null} releasedMb
  * @property {number | null} mainSteadyMb
@@ -155,6 +159,11 @@ export function aggregate(runs) {
   );
   const steadyMinMb = steady.length ? Math.min(...steady) : null;
   const steadyMaxMb = steady.length ? Math.max(...steady) : null;
+  const summed = /** @type {number[]} */ (
+    runs
+      .map((r) => r.summedSteadyMb)
+      .filter((x) => x !== null && !Number.isNaN(x))
+  );
   return {
     runs: runs.length,
     settled,
@@ -162,6 +171,10 @@ export function aggregate(runs) {
     steadyMaxMb,
     steadySpreadMb:
       steady.length >= 2 ? Math.max(...steady) - Math.min(...steady) : null,
+    summedSteadyMb: summed.length ? median(summed) : null,
+    summedSteadySpreadMb:
+      summed.length >= 2 ? Math.max(...summed) - Math.min(...summed) : null,
+    summedSpikeMb: median(runs.map((r) => r.summedSpikeMb)),
     settleT: settled
       ? median(runs.map((r) => /** @type {number} */ (r.settleT)))
       : null,
@@ -192,6 +205,8 @@ export function aggregate(runs) {
  * @property {number} limit
  * @property {"MB" | "s"} unit
  * @property {Status} status
+ * @property {Status} [wouldBe] the verdict this check would have had, on a
+ *   platform where the checks decide (status is REPORT-ONLY there)
  * @property {string} [reason] waiver reason
  * @property {string} [note]
  * @property {Record<string, number | null>} detail raw numbers behind the value
@@ -227,11 +242,18 @@ function releaseNote(runs, vanillaSteadyMb, threshold, peakT, limitSec) {
 
 /**
  * @param {Measurements} m
- * @param {{ budgets: Budgets, waivers: Record<string, string>, windowSec: number }} opts
- * @returns {{ aggregates: Record<string, Record<string, Agg>>, checks: Check[], ok: boolean }}
+ * @param {{ budgets: Budgets, waivers: Record<string, string>, windowSec: number, metric?: Metric, reportOnly?: boolean }} opts
+ *   metric: what the per-run steady/spike/released numbers were computed on
+ *   (the release check re-reads the raw samples and must use the same field).
+ *   reportOnly: this platform cannot compute that metric (no smaps on macOS),
+ *   so the checks are printed with the verdict they would have had and decide
+ *   nothing: the exit code stays 0 and pass/fail comes from the Linux run.
+ * @returns {{ aggregates: Record<string, Record<string, Agg>>, checks: Check[], ok: boolean, reportOnly: boolean }}
  */
 export function evaluate(m, opts) {
   const { budgets, waivers } = opts;
+  const field = opts.metric ?? "rss";
+  const reportOnly = opts.reportOnly === true;
   /** @type {Record<string, Record<string, Agg>>} */
   const aggregates = {};
   for (const [c, configs] of Object.entries(m)) {
@@ -242,10 +264,10 @@ export function evaluate(m, opts) {
   /** @type {Check[]} */
   const checks = [];
 
-  /** @param {Omit<Check, "status" | "reason">} c @param {boolean | null | "inconclusive"} pass */
+  /** @param {Omit<Check, "status" | "reason" | "wouldBe">} c @param {boolean | null | "inconclusive"} pass */
   const push = (c, pass) => {
     /** @type {Status} */
-    const status =
+    const raw =
       pass === null
         ? "SKIP"
         : pass === "inconclusive"
@@ -254,11 +276,17 @@ export function evaluate(m, opts) {
             ? "PASS"
             : "FAIL";
     /** @type {Check} */
-    const check = { ...c, status };
-    if (waivers[c.key] && status !== "SKIP" && status !== "INCONCLUSIVE") {
+    const check = { ...c, status: raw };
+    if (waivers[c.key] && raw !== "SKIP" && raw !== "INCONCLUSIVE") {
       check.reason = waivers[c.key];
-      check.note = `${c.note ? `${c.note}; ` : ""}would ${status}`;
+      check.note = `${c.note ? `${c.note}; ` : ""}would ${raw}`;
       check.status = "WAIVED";
+    }
+    if (reportOnly && raw !== "SKIP") {
+      // Report-only never decides: keep the verdict it would have had, so the
+      // macOS report says what a Linux run would have said.
+      check.wouldBe = raw;
+      check.status = "REPORT-ONLY";
     }
     checks.push(check);
   };
@@ -422,7 +450,13 @@ export function evaluate(m, opts) {
           : budgets[steadyKey];
       const noise = spreadNote(van, threshold, "vanilla");
       const perRun = (m[c].candidate ?? []).map((r) =>
-        releaseSeconds(r.samples, van.steadyMb ?? 0, threshold, RELEASE_HOLD),
+        releaseSeconds(
+          r.samples,
+          van.steadyMb ?? 0,
+          threshold,
+          RELEASE_HOLD,
+          field,
+        ),
       );
       const runs = median(perRun.map((x) => x ?? Number.POSITIVE_INFINITY));
       const never = !Number.isFinite(runs);
@@ -597,7 +631,11 @@ export function evaluate(m, opts) {
   }
 
   const ok = checks.every(
-    (c) => c.status === "PASS" || c.status === "WAIVED" || c.status === "SKIP",
+    (c) =>
+      c.status === "PASS" ||
+      c.status === "WAIVED" ||
+      c.status === "SKIP" ||
+      c.status === "REPORT-ONLY",
   );
-  return { aggregates, checks, ok };
+  return { aggregates, checks, ok, reportOnly };
 }

@@ -8,6 +8,7 @@ import path from "node:path";
 import { evaluate } from "./budget.mjs";
 import { ensureFixture } from "./fixture.mjs";
 import { GC_HARNESS, piVersion, resolvePi } from "./pi.mjs";
+import { hasSmaps, measurePlatform } from "./platform.mjs";
 import { measureRun } from "./runner.mjs";
 
 /**
@@ -48,6 +49,16 @@ export async function runBudget(o, hooks = {}) {
   const pi = resolvePi({ pi: o.pi, cwd: o.cwd });
   const version = await piVersion(pi, o.cwd);
   log(`pi ${version} (${pi.source}: ${pi.command})`);
+  // Issue #10: the checks read the deduplicated metric where smaps exists.
+  // Everywhere else the sampler can only sum RSS, which charges a forked node
+  // child for the node binary pi already maps, so nothing is decided there.
+  const metric = hasSmaps() ? "dedup" : "rss";
+  const reportOnly = !hasSmaps();
+  log(
+    metric === "dedup"
+      ? "metric: deduplicated RSS (shared file-backed pages counted once), summed RSS reported alongside"
+      : `metric: summed RSS only (${measurePlatform()} has no /proc/<pid>/smaps): checks are report-only, exit 0 unless the run itself fails`,
+  );
 
   /** @type {Record<string, string | null>} */
   const sessions = {};
@@ -120,13 +131,18 @@ export async function runBudget(o, hooks = {}) {
             settleMinSec: o.settleMin,
             releaseSec: o.budgets.spikeReleaseSeconds,
             extraArgs: o.piArgs,
+            metric,
           });
           const anon =
             r.anonSteadyMb === null || r.anonSteadyMb === undefined
               ? ""
               : `, anon ${r.anonSteadyMb.toFixed(1)} + file ${(r.fileSteadyMb ?? 0).toFixed(1)} + shmem ${(r.shmemSteadyMb ?? 0).toFixed(1)}`;
+          const summed =
+            r.metric === "dedup"
+              ? `, summed ${r.summedSteadyMb === null ? "n/a" : r.summedSteadyMb.toFixed(1)} MB`
+              : "";
           log(
-            `  ${r.settled ? `steady ${/** @type {number} */ (r.steadyMb).toFixed(1)} MB (settled at ${/** @type {number} */ (r.settleT).toFixed(0)}s, main ${/** @type {number} */ (r.mainSteadyMb).toFixed(1)} + children ${/** @type {number} */ (r.childrenSteadyMb).toFixed(1)}${anon})` : "never settled"}, spike ${r.spikeMb.toFixed(1)} MB, max ping gap ${r.maxGapMs.toFixed(0)} ms`,
+            `  ${r.settled ? `steady ${/** @type {number} */ (r.steadyMb).toFixed(1)} MB (settled at ${/** @type {number} */ (r.settleT).toFixed(0)}s, main ${/** @type {number} */ (r.mainSteadyMb).toFixed(1)} + children ${/** @type {number} */ (r.childrenSteadyMb).toFixed(1)}${anon}${summed})` : "never settled"}, spike ${r.spikeMb.toFixed(1)} MB${r.metric === "dedup" ? ` (summed ${r.summedSpikeMb.toFixed(1)})` : ""}, max ping gap ${r.maxGapMs.toFixed(0)} ms`,
           );
           measurements[c][name].push(r);
           if (o.gc && r.gcReady === false)
@@ -145,11 +161,15 @@ export async function runBudget(o, hooks = {}) {
     budgets: o.budgets,
     waivers: o.waivers,
     windowSec: o.window,
+    metric,
+    reportOnly,
   });
   const meta = {
     piVersion: version,
     piSource: pi.source,
-    platform: `${process.platform}-${process.arch}, node ${process.version}, ${os.cpus().length} cpus`,
+    platform: `${measurePlatform()}-${process.arch}, node ${process.version}, ${os.cpus().length} cpus`,
+    metric,
+    reportOnly,
     runs: o.runs,
     windowSec: o.window,
     steadySec: Math.min(o.steadySeconds, o.window),
